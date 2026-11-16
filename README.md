@@ -35,6 +35,7 @@ they are no longer needed.
 - [Email checks and HIBP](#email-checks-and-hibp)
 - [File metadata](#file-metadata)
 - [AI-assisted case investigation](#ai-assisted-case-investigation)
+- [Evidence integrity, bundles, and case intelligence](#evidence-integrity-bundles-and-case-intelligence)
 - [Reports, audit log, and retention](#reports-audit-log-and-retention)
 - [Configuration](#configuration)
 - [Privacy and security controls](#privacy-and-security-controls)
@@ -55,6 +56,9 @@ they are no longer needed.
 | **Metadata stripping** | Writes a metadata-free **copy** of JPEG or PNG files. The original is never modified. |
 | **Reports** | HTML and JSON export with timestamps, links, collection notes, confidence labels, audit entries, deletion controls, and retention limits. |
 | **AI-assisted cases** | Optional case workspace that attaches saved reports and asks an OpenAI-compatible provider for a structured analysis with report-level citations. Disabled and idle until you configure a key and press **Analyze**. |
+| **Tamper-evident cases** | Every case change is appended to a SHA-256 hash chain and the head is signed with a per-case Ed25519 key. Verification re-hashes case notes, the report set, and every attached report byte. |
+| **Signed case bundles** | Export a single self-contained `.arguscase` file with reports, ledger, and analysis, signed with Ed25519. Anyone can verify it without your private key, optionally pinning your signer fingerprint. |
+| **Deterministic case intelligence** | A local timeline, exact repeated indicators across reports, and conservative contradiction checks (status flips, impossible timestamps, faster-than-air GPS travel, duplicate files, unroutable email). Every item cites an exact report ID and JSON field; no model, no network. |
 | **Two interfaces** | Full CLI plus a local web UI bound to `127.0.0.1` with CSP, no-store headers, and CSRF-style header checks on mutations. |
 
 Everything runs locally except explicit public-source checks and, only when you start a case
@@ -166,6 +170,11 @@ node argus.mjs strip ./photo.jpg --out ./shared/photo.jpg
 
 # Start the local web UI
 node argus.mjs serve --open
+
+# Build a signed, portable case bundle
+node argus.mjs case create "Domain due diligence" --notes "Scope: public sources only"
+node argus.mjs case export <case-id> --out ./handoff.arguscase
+node argus.mjs case verify-bundle ./handoff.arguscase
 ```
 
 If you run `node argus.mjs` with no arguments in an interactive terminal, ARGUS starts a small
@@ -199,6 +208,7 @@ argus <command> [target] [options]
 | `serve` / `web` / `ui` | Start the local web UI on `127.0.0.1`. |
 | `sites` | Print the source registry. |
 | `reports [action]` | `list`, `show <id>`, `delete <id>`, `purge`, or `delete-all --yes`. |
+| `case [action]` | `list`, `show <id>`, `create <title>`, `attach <id> <report-id,...>`, `intel <id>`, `verify <id>`, `export <id>`, `verify-bundle <path>`, or `delete <id>`. |
 | `help`, `version` | Usage and version. |
 
 Common options:
@@ -215,8 +225,10 @@ Common options:
 | `--concurrency <n>` | Username: parallel requests, 1–24. |
 | `--timeout <ms\|12s>` | Request timeout (default 12000 ms). |
 | `--port <n>` | Web UI port (default 8787). |
-| `--out <path>` | Strip: destination file. |
-| `--limit <n>` | Reports/audit rows to show. |
+| `--out <path>` | `strip` or `case export`: destination file. |
+| `--notes <text>` | `case create`: initial case notes. |
+| `--fingerprint <hex>` | `case verify-bundle`: pin the signer fingerprint (first 8+ hex characters). |
+| `--limit <n>` | Reports/audit/timeline rows to show. |
 | `--yes` | Skip the `reports delete-all` confirmation. |
 | `--no-color` | Disable ANSI colour. |
 
@@ -237,6 +249,12 @@ node argus.mjs strip ./evidence.jpg --out ./public/copy.jpg
 node argus.mjs reports show username-example-20260101_120000-ab12
 node argus.mjs reports purge
 node argus.mjs reports delete-all --yes
+node argus.mjs case create "Vendor review" --notes "Public sources only"
+node argus.mjs case attach case-vendor-review-20260101_120000-ab12 username-example-20260101_120000-ab12
+node argus.mjs case intel case-vendor-review-20260101_120000-ab12
+node argus.mjs case verify case-vendor-review-20260101_120000-ab12
+node argus.mjs case export case-vendor-review-20260101_120000-ab12 --out ./handoff.arguscase
+node argus.mjs case verify-bundle ./handoff.arguscase --fingerprint A1B2C3D4
 ```
 
 ---
@@ -261,9 +279,10 @@ Tabs:
    download a metadata-stripped copy. The original is never modified.
 4. **Reports** — list saved reports, open HTML, download JSON, delete one, or delete everything
    (including the audit log). The audit panel shows action history, not findings.
-5. **Cases** — create a local case with a title and notes, attach or remove saved reports, and
-   run a reviewed AI analysis. Only attached reports and case notes are sent, and the preview
-   must be saved explicitly.
+5. **Cases** — create a local case with a title and notes, attach or remove saved reports, read the
+   deterministic timeline and contradiction checks, verify the signed evidence ledger, export a
+   signed `.arguscase` bundle, and run a reviewed AI analysis. Only attached reports and case
+   notes are sent to an AI provider, and the preview must be saved explicitly.
 6. **AI settings** — configure an OpenAI-compatible base URL, model, limits, and API key. The
    key is stored server-side and is never returned to the browser.
 
@@ -303,6 +322,9 @@ The UI uses a small JSON API on the same origin:
 | `POST` | `/api/cases/:id/analyze` | Explicit provider call; returns an unsaved preview with `previewId`. |
 | `POST` | `/api/cases/:id/analyses` | Save a reviewed preview with `{ previewId }`. |
 | `DELETE` | `/api/cases/:id/analyses/:analysisId` | Delete a saved analysis. |
+| `GET` | `/api/cases/:id/intel` | Deterministic timeline and contradiction checks with citations. |
+| `GET` | `/api/cases/:id/verify` | Verify the ledger, signature, key file, notes, reports, and analyses. |
+| `GET` | `/api/cases/:id/bundle` | Download a signed `.arguscase` bundle (attachment). |
 
 Mutating calls must include `x-argus: 1`. Username/email scans are asynchronous: poll
 `/api/jobs/:id` until `status` is `done` or `error`.
@@ -486,8 +508,9 @@ are exposed.
    show a retry button.
 
 Case views also show a deterministic timeline and exact indicators repeated across attached
-reports (for example, a domain found in DNS and a file URL). These are review leads with links
-back to their source reports; a repeated value does not establish common ownership or identity.
+reports (for example, a domain found in DNS and a file URL). Each occurrence cites the report id
+and JSON field it came from. These are review leads; a repeated value does not establish common
+ownership or identity.
 
 Case data is stored under `data/cases/` as `argus.case/v1` JSON. Each case keeps at most 50
 reports and 20 reviewed analyses. Analyses are stored as `argus.analysis/v1` records. Prompts
@@ -533,6 +556,133 @@ Errors are returned with a stable `code`, a human-readable message, and `retryab
 
 Provider error text is truncated and redacted before it reaches the UI or logs. Full provider
 responses and prompts are not logged.
+
+---
+
+## Evidence integrity, bundles, and case intelligence
+
+These features are deterministic, offline, and independent of the AI provider. They work with no
+API key and no network connection.
+
+### Signed evidence ledger
+
+Every new case starts an append-only ledger (`argus.ledger/v1`) stored inside its case JSON:
+
+- Each entry records a sequence number, UTC timestamp, type, details, `prevHash`, and `hash`.
+- `hash` is SHA-256 over the canonical JSON of the entry (sorted keys, no `hash` field), so
+  key order and formatting cannot change the result.
+- The chain head is signed with a per-case Ed25519 key. The case stores only the public key and
+  a fingerprint; the private key lives in `data/case-keys/<case-id>.key.json` (mode `0600` on
+  POSIX, git-ignored via `data/`).
+- Recorded events: `case.created`, `case.updated` (title/notes with hashes), `report.attached`
+  (report hash), `report.removed`, `analysis.saved` (evidence and output hashes), and
+  `analysis.deleted`.
+
+`argus case verify` re-hashes the chain, verifies the head signature, checks that the key file
+matches the embedded public key, replays case title/notes hashes and the report set, re-hashes
+every attached report, and re-hashes every saved analysis. For bundles it also checks the bundle
+digest and signature.
+
+**What verification proves.** Since the last valid ledger state, the case fields, the ledger
+entries, the set of attached reports, every attached report's bytes, and every saved analysis
+are unchanged, and they were signed by the holder of this case's private key.
+
+**What it cannot prove.**
+
+- A local attacker who can rewrite the case JSON, the ledger, **and** the key file together can
+  forge a consistent chain. Pin the signer fingerprint out of band (see bundles) to detect this.
+- A complete rollback to an older valid copy of the case, ledger, and signature cannot be
+  detected locally, because the old state is internally consistent. Record the head hash or
+  export bundles externally if you need to detect rollback over time.
+- Verification does not encrypt data at rest. Use OS permissions and full-disk encryption.
+- It is not a trusted timestamp, a legal chain-of-custody system, or proof that the underlying
+  observations are true. It only proves integrity relative to the signing key.
+- Losing `data/case-keys/<case-id>.key.json` means new changes cannot be signed under the same
+  identity. Restore it from backup or treat the case as archived and start a new one.
+
+Legacy cases created before this feature have no ledger. They verify as `unsigned` and receive a
+backfilled bootstrap entry (`backfilled: true`) on their next change. That entry protects future
+changes but cannot attest to earlier history.
+
+### Signed case bundles (`.arguscase`)
+
+A bundle is one self-contained JSON file — no zip dependency and no database. It contains the
+manifest, case record, every attached report, the ledger, the deterministic intelligence layer
+(timeline, repeated indicators, and contradiction checks),
+a canonical digest, and an Ed25519 signature.
+
+```bash
+# Default output: data/bundles/<case-id>.arguscase (git-ignored)
+node argus.mjs case export <case-id>
+
+# Explicit destination
+node argus.mjs case export <case-id> --out ./handoff.arguscase
+```
+
+Verification needs only the bundle file, not the original case, reports, or private key:
+
+```bash
+node argus.mjs case verify-bundle ./handoff.arguscase
+node argus.mjs case verify-bundle ./handoff.arguscase --fingerprint A1B2C3D4
+```
+
+`--fingerprint` accepts the first 8+ hex characters of the signer fingerprint (absolute or short
+form). Exchange it through a separate, trusted channel — read it aloud, put it in a signed
+message, or publish it in advance. Without an out-of-band pin, a bundle proves internal
+consistency and that it was signed by the key embedded in the file, not who that key belongs to.
+
+A bundle contains report contents and case notes in clear text. Treat it as sensitive evidence:
+anyone who receives it can read it. It is signed, not encrypted.
+
+### Deterministic case intelligence
+
+`argus case intel <case-id>` (or the **What the evidence shows** panel) builds:
+
+- **Timeline** — report collection times, EXIF original/digitized/modified timestamps, GPS
+  date/time stamps, account "Joined/Created/Member since" fields, WHOIS creation/update/expiry
+  dates, and HIBP breach dates. Sorted ascending, deduplicated, and capped for display.
+- **Repeated indicators** — exact emails, domains, IP addresses, URLs, and handles that appear
+  in two or more attached reports, grouped by value. Each occurrence cites its report id and JSON
+  field path. Repetition is a prioritization hint: shared hosting, public infrastructure, or a
+  common value does not establish common ownership.
+- **Contradictions** — conservative rules over the attached reports:
+
+| Rule | Severity | Trigger |
+| --- | --- | --- |
+| `status_conflict` | medium | The same target and source was recorded present in one collection and absent in another. |
+| `name_conflict` | low | Confirmed profiles for the same target publish different display names. |
+| `location_conflict` | low | Confirmed profiles for the same target publish different self-reported locations. |
+| `impossible_timestamp` | high | EXIF capture time is more than a day after the report that collected the file. |
+| `travel_conflict` | medium/high | Two GPS-tagged files are far apart relative to their timestamps (>900 km/h implied). |
+| `duplicate_file` | info | Two attached files share a SHA-256 hash, so they are not independent corroboration. |
+| `unroutable_email` | medium | A syntactically valid address has no MX or implicit MX and no DNS errors were recorded. |
+
+Every timeline item, every repeated-indicator occurrence, and every contradiction citation names an
+exact `reportId` and JSON `field` (for example `findings[0].profile.fields[0].value` or
+`exif.timestamps.original`). The engine never calls a model or the network.
+
+These are **leads, not conclusions**: display names legitimately vary by platform; locations can
+be stale or vague; EXIF timestamps carry no timezone, so travel conflicts may be clock or
+timezone artefacts; DNS may have changed since collection; and a shared domain, IP, or handle may
+reflect shared hosting or a common public service. A quiet result means the rules found nothing to
+flag, not that the evidence is consistent or true.
+
+### Case CLI reference
+
+```bash
+node argus.mjs case list
+node argus.mjs case show <case-id>
+node argus.mjs case create "Title" --notes "Scope and lawful basis"
+node argus.mjs case attach <case-id> <report-id,...>
+node argus.mjs case intel <case-id> [--limit <n>] [--json]
+node argus.mjs case verify <case-id> [--json]
+node argus.mjs case export <case-id> [--out <path>] [--json]
+node argus.mjs case verify-bundle <path> [--fingerprint <hex>] [--json]
+node argus.mjs case delete <case-id>
+```
+
+`case delete` removes the case JSON and its signing key. It does not delete the saved reports
+that were attached to it.
 
 ---
 
@@ -632,6 +782,13 @@ strings such as a bare `404` cause false negatives.
   against attached report IDs, and unsupported claims are flagged instead of shown as facts.
 - **No automated outreach.** AI suggestions never trigger messages, logins, scans, or third-party
   actions.
+- **Tamper-evident local cases.** Case changes are hash-chained and signed with a per-case
+  Ed25519 key stored under the git-ignored `data/` directory; verification is offline and
+  read-only.
+- **Signed handoff bundles.** `.arguscase` files are self-contained and verifiable without the
+  private key. Pin the fingerprint out of band when authenticity, not just integrity, matters.
+- **Deterministic analysis stays local.** The timeline and contradiction engine make no model or
+  network calls and cite exact report IDs and fields.
 - **Output hardening.** HTML escaping, safe URL schemes, CSP, `no-store`, `nosniff`, and
   cross-origin mutation rejection.
 - **Honest failures.** Timeouts, 5xx responses, robots denials, and ambiguous pages are
@@ -675,6 +832,11 @@ Coverage includes:
   minimisation, citation validation, and no-request behaviour without a key.
 - Case creation, report attachment/removal, analysis persistence, and deletion without losing
   reports.
+- Ledger hashing, canonical JSON, signature verification, key-file matching, tamper detection,
+  backfilled legacy cases, and signed bundle export/verification with fingerprint pinning.
+- Deterministic intelligence: timeline ordering, every contradiction rule, citation fields,
+  severity ordering, stable IDs, repeated-indicator grouping and exact field paths, and
+  conservative negative cases.
 - Server headers, CSRF-style header checks, file analysis, report download/deletion, and path
   traversal rejection.
 - End-to-end case analysis against a local mock OpenAI-compatible provider, including preview
@@ -704,8 +866,18 @@ Coverage includes:
   every claim against the report. Provider prompts and model behaviour vary by vendor.
 - The AI evidence payload is deliberately minimised, so a provider can miss details that were
   truncated or omitted. Omitted report IDs are reported in the preview.
-- Cases and analyses are local files with no encryption at rest beyond OS/disk controls. They are
-  not a chain-of-custody system, and deleting a case does not delete its saved reports.
+- Cases and analyses are local files. The ledger detects accidental or partial tampering and
+  edits that do not also replace the case's signing key; it is not encryption, a trusted
+  timestamp, or legal chain-of-custody. An attacker who can rewrite the case, ledger, and key
+  file together can forge a consistent chain, and a complete rollback to an older valid copy
+  cannot be detected locally. Pin fingerprints out of band and retain exported bundles
+  externally if those threats matter.
+- Losing a case key prevents further signing under that identity. Bundles contain report
+  contents and notes in clear text and must be handled as sensitive evidence.
+- The deterministic engine is intentionally conservative. A clean result means no rule fired,
+  not that the evidence is complete or consistent. Name, location, timezone, DNS, and shared
+  identifier data can change, be self-reported, or reflect common infrastructure, and every
+  flagged item needs human verification.
 - The tool is not a substitute for legal process, verified identity checks, or forensic
   chain-of-custody procedures.
 
@@ -726,4 +898,4 @@ You are responsible for how you use this tool.
 
 ---
 
-**ARGUS 1.0.0** · zero dependencies · Node 18+ · local-only · MIT
+**ARGUS 1.1.0** · zero dependencies · Node 18+ · local-only · MIT

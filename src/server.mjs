@@ -9,14 +9,17 @@ import {
   CaseError,
   addAnalysis,
   attachReports,
+  caseIntel,
   caseStats,
   createCase,
   deleteAnalysis,
   deleteCase,
+  exportCaseBundle,
   listCases,
   readCase,
   removeReport,
   updateCase,
+  verifyCase,
 } from './cases.mjs';
 import {
   createDataDirs,
@@ -86,6 +89,22 @@ function caseReportView(record, config) {
       return { id, missing: true };
     }
   });
+}
+
+/** Case payload with the report summary and fresh cross-report correlations. */
+function caseResponse(record, config) {
+  const reports = record.reportIds.flatMap((reportId) => {
+    try {
+      return [{ id: reportId, report: readReport(reportId, config) }];
+    } catch {
+      return [];
+    }
+  });
+  return {
+    ...record,
+    reports: caseReportView(record, config),
+    correlations: correlateCaseReports(reports),
+  };
 }
 
 function json(res, status, payload, extraHeaders = {}) {
@@ -330,7 +349,7 @@ export function createAppServer(config = loadConfig()) {
         const body = await readJson(req, 32_000);
         const record = createCase(body, config);
         appendAudit({ action: 'case.created', details: { caseId: record.id } }, config);
-        return json(res, 201, { case: { ...record, reports: [] } });
+        return json(res, 201, { case: caseResponse(record, config) });
       }
 
       const caseAnalyzeMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)\/analyze$/);
@@ -458,7 +477,7 @@ export function createAppServer(config = loadConfig()) {
             config,
           );
           return json(res, 201, {
-            case: { ...saved.case, reports: caseReportView(saved.case, config) },
+            case: caseResponse(saved.case, config),
             analysis: saved.analysis,
           });
         }
@@ -469,7 +488,7 @@ export function createAppServer(config = loadConfig()) {
             { action: 'case.analysis_deleted', details: { caseId: id, analysisId } },
             config,
           );
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+          return json(res, 200, { case: caseResponse(record, config) });
         }
       }
 
@@ -488,7 +507,7 @@ export function createAppServer(config = loadConfig()) {
             },
             config,
           );
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+          return json(res, 200, { case: caseResponse(record, config) });
         }
         if (method === 'DELETE' && reportId) {
           const record = removeReport(id, reportId, config);
@@ -499,8 +518,61 @@ export function createAppServer(config = loadConfig()) {
             },
             config,
           );
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+          return json(res, 200, { case: caseResponse(record, config) });
         }
+      }
+
+      const caseIntelMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)\/intel$/);
+      if (caseIntelMatch && method === 'GET') {
+        const id = caseIntelMatch[1];
+        const intel = caseIntel(id, config);
+        return json(res, 200, { intel });
+      }
+
+      const caseVerifyMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)\/verify$/);
+      if (caseVerifyMatch && method === 'GET') {
+        const id = caseVerifyMatch[1];
+        const verification = verifyCase(id, config);
+        if (url.searchParams.get('audit') !== '0') {
+          appendAudit(
+            {
+              action: 'case.verified',
+              details: {
+                caseId: id,
+                status: verification.status,
+                errorCount: verification.errorCount,
+              },
+            },
+            config,
+          );
+        }
+        return json(res, 200, { verification });
+      }
+
+      const caseBundleMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)\/bundle$/);
+      if (caseBundleMatch && method === 'GET') {
+        const id = caseBundleMatch[1];
+        const { bundle } = exportCaseBundle(id, config);
+        appendAudit(
+          {
+            action: 'case.bundle_exported',
+            details: {
+              caseId: id,
+              entries: bundle.manifest.ledgerEntries,
+              fingerprint: bundle.manifest.signer.fingerprint,
+            },
+          },
+          config,
+        );
+        const body = `${JSON.stringify(bundle, null, 2)}\n`;
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff',
+          'referrer-policy': 'no-referrer',
+          'content-disposition': `attachment; filename="${id}.arguscase"`,
+        });
+        return res.end(body);
       }
 
       const caseMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)$/);
@@ -508,17 +580,13 @@ export function createAppServer(config = loadConfig()) {
         const id = caseMatch[1];
         if (method === 'GET') {
           const record = readCase(id, config);
-          const reports = record.reportIds.flatMap((reportId) => {
-            try { return [{ id: reportId, report: readReport(reportId, config) }]; }
-            catch { return []; }
-          });
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config), correlations: correlateCaseReports(reports) } });
+          return json(res, 200, { case: caseResponse(record, config) });
         }
         if (method === 'PATCH' || method === 'PUT') {
           const body = await readJson(req, 32_000);
           const record = updateCase(id, body, config);
           appendAudit({ action: 'case.updated', details: { caseId: id } }, config);
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+          return json(res, 200, { case: caseResponse(record, config) });
         }
         if (method === 'DELETE') {
           deleteCase(id, config);

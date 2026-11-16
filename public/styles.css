@@ -551,9 +551,90 @@ select option { background: #0b1220; color: var(--text); }
 
 .chip.bad { color: var(--red); border-color: #7f1d1d; background: rgba(248, 113, 113, 0.06); }
 .chip.warn { color: var(--yellow); border-color: #713f12; background: rgba(251, 191, 36, 0.06); }
+.chip.good { color: var(--green); border-color: #14532d; background: rgba(52, 211, 153, 0.06); }
 .chip.citation { border-radius: 7px; font-size: 10.5px; white-space: normal; text-align: left; }
 a.chip { text-decoration: none; }
 a.chip:hover { border-color: var(--accent); }
+
+/* Evidence integrity */
+.integrity-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 12px 0 8px;
+}
+.integrity-facts { display: grid; gap: 5px; margin: 0; }
+.integrity-facts div { display: grid; grid-template-columns: 74px 1fr; gap: 8px; }
+.integrity-facts dt { color: var(--muted); font-size: 12px; }
+.integrity-facts dd { margin: 0; font-size: 12px; }
+.integrity-problems { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 7px; }
+.integrity-problems li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+
+/* Case intelligence */
+.chip.info { color: #93c5fd; border-color: #1e3a8a; background: rgba(147, 197, 253, 0.06); }
+.chip.kind-collection { color: #c4b5fd; border-color: #4c1d95; }
+.chip.kind-metadata { color: var(--accent); border-color: #164e63; }
+.chip.kind-gps { color: var(--green); border-color: #14532d; }
+.chip.kind-account { color: #f9a8d4; border-color: #831843; }
+.chip.kind-domain { color: #fdba74; border-color: #7c2d12; }
+.chip.kind-breach { color: var(--red); border-color: #7f1d1d; }
+
+.intel-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 4px;
+}
+.intel-head {
+  margin: 18px 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.intel-finding {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 10px;
+  background: #0b1321;
+  padding: 9px 12px;
+  margin-bottom: 8px;
+}
+.intel-finding.severity-high { border-left-color: var(--red); }
+.intel-finding.severity-medium { border-left-color: var(--yellow); }
+.intel-finding.severity-low { border-left-color: var(--accent); }
+.intel-finding.severity-info { border-left-color: var(--muted); }
+.intel-finding summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  font-size: 13px;
+}
+.intel-finding p { margin: 9px 0 6px; color: var(--text); }
+.intel-citations { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; }
+.intel-citations li {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: #080f1b;
+  border: 1px solid var(--line);
+}
+.table-scroll { overflow-x: auto; }
+.intel-timeline td { vertical-align: top; }
+.nowrap { white-space: nowrap; }
 
 .callout.error {
   border-left-color: var(--red);
@@ -678,12 +759,10 @@ a.chip:hover { border-color: var(--accent); }
 }
 .app-footer p { max-width: 900px; margin: 0 auto; }
 
-.case-correlations { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(11, 18, 32, .45); }
-.case-correlations h3, .case-correlations h4 { color: var(--accent); margin: 4px 0 8px; }
-.correlation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.correlation-grid article { padding: 10px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.correlation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.correlation-grid article { padding: 10px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; background: #0b1321; }
 .correlation-grid ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
-.case-correlations ol { padding-left: 22px; }
+.correlation-grid strong { color: var(--accent); }
 
 @media (max-width: 680px) {
   main { padding: 16px; }

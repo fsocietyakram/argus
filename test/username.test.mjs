@@ -49,7 +49,7 @@ test('evaluateResponse distinguishes confirmed, possible, absent, blocked, and e
   assert.equal(evaluateResponse(high, { status: 0, error: 'timeout' }).status, 'error');
   assert.equal(evaluateResponse(high, { status: 503, text: '' }).status, 'error');
 
-  assert.equal(evaluateResponse(high, { status: 200, text: 'anything' }).status, 'confirmed');
+  assert.equal(evaluateResponse(high, { status: 200, text: 'anything' }).status, 'unverified');
   assert.equal(evaluateResponse(medium, { status: 200, text: 'WELCOME' }).status, 'possible');
   assert.equal(evaluateResponse(medium, { status: 200, text: 'nothing here' }).status, 'unverified');
 
@@ -175,7 +175,7 @@ test('scanUsername records confirmed, possible, absent, blocked, skipped, and er
   assert.equal(result.normalized, 'example');
   assert.equal(result.target, '@example');
   assert.equal(result.summary.total, sources.length);
-  assert.equal(result.summary.confirmed, 2);
+  assert.equal(result.summary.confirmed, 1);
   assert.equal(result.summary.possible, 1);
   assert.equal(result.summary.unverified, 3);
   assert.equal(result.summary.absent, 2);

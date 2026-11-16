@@ -2,7 +2,7 @@ import net from 'node:net';
 import { domainToASCII } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { dnsIntel } from './email.mjs';
-import { fetchLimited, parseJson, uniq, truncate } from './util.mjs';
+import { fetchLimited, parseJson, uniq, truncate, VERSION } from './util.mjs';
 
 export function normalizeDomain(input) {
   let value = String(input ?? '').trim().toLowerCase();
@@ -308,7 +308,7 @@ export async function scanDomain(input, options = {}) {
   return {
     schema: 'argus.report/v1',
     command: 'domain',
-    tool: { name: 'ARGUS', version: '1.0.0' },
+    tool: { name: 'ARGUS', version: VERSION },
     target: domain,
     createdAt: startedAt.toISOString(),
     durationMs: Date.now() - started,

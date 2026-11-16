@@ -11,6 +11,18 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { analyzeFile, stripMetadata } from './src/exif.mjs';
 import { loadConfig } from './src/config.mjs';
+import {
+  attachReports,
+  caseIntel,
+  createCase,
+  deleteCase,
+  exportCaseBundle,
+  listCases,
+  readCase,
+  updateCase,
+  verifyBundleFile,
+  verifyCase,
+} from './src/cases.mjs';
 import { scanDomain } from './src/domain.mjs';
 import { scanEmail } from './src/email.mjs';
 import {
@@ -56,6 +68,7 @@ ${c.bold('COMMANDS')}
   serve                       start the local web UI on 127.0.0.1
   sites                       list the source registry
   reports [action]            list, show, delete, purge, or delete-all
+  case [action]               create, list, show, attach, intel, verify, export, or verify-bundle
   help | version
 
 ${c.bold('OPTIONS')}
@@ -69,7 +82,9 @@ ${c.bold('OPTIONS')}
   --concurrency <n>           username: parallel requests (1-24)
   --timeout <ms|12s>          request timeout (default 12000 ms)
   --port <n>                  web UI port (default 8787)
-  --out <path>                strip: destination file
+  --out <path>                strip or case export: destination file
+  --notes <text>              case create: case notes
+  --fingerprint <hex>         case verify-bundle: pin the signer (8+ hex chars)
   --limit <n>                 reports/audit rows to show
   --yes                       reports delete-all: skip confirmation
   --no-color                  disable ANSI color
@@ -85,6 +100,11 @@ ${c.bold('EXAMPLES')}
   argus strip ./photo.jpg --out ./shared/photo.jpg
   argus serve --port 8787 --open
   argus reports show username-torvalds-20260101_120000-ab12
+  argus case create "Domain due diligence" --notes "Scope: public sources only"
+  argus case intel case-domain-due-diligence-20260101_120000-ab12
+  argus case verify case-domain-due-diligence-20260101_120000-ab12
+  argus case export case-domain-due-diligence-20260101_120000-ab12 --out ./handoff.arguscase
+  argus case verify-bundle ./handoff.arguscase --fingerprint A1B2C3D4
   argus reports delete-all --yes
 
 ${c.bold('ETHICS')}
@@ -115,6 +135,9 @@ const ALIASES = {
   ui: 'serve',
   sites: 'sites',
   reports: 'reports',
+  case: 'case',
+  cases: 'case',
+  bundle: 'case',
   help: 'help',
   version: 'version',
 };
@@ -141,6 +164,8 @@ const VALUE_FLAGS = new Set([
   'port',
   'out',
   'limit',
+  'notes',
+  'fingerprint',
 ]);
 
 /* ------------------------------------------------------------------ */
@@ -573,6 +598,269 @@ async function commandReports(args, flags) {
   throw usageError('Usage: argus reports [list|show <id>|delete <id>|purge|delete-all --yes]');
 }
 
+function printIntegrity(result, { label = 'case integrity' } = {}) {
+  const status = String(result.status || 'unknown');
+  const statusColor = status === 'valid' ? c.green : status === 'unsigned' ? c.yellow : c.red;
+  console.log(
+    `${c.bold(c.cyan('◆ ARGUS'))}  ${c.bold(label)}  ${statusColor(status.toUpperCase())}`,
+  );
+  if (result.caseTitle) console.log(`  Case       ${result.caseTitle}`);
+  if (result.caseId) console.log(`  Case ID    ${result.caseId}`);
+  if (result.exportedAt) console.log(`  Exported   ${result.exportedAt}`);
+  console.log(
+    `  Ledger     ${result.entries} entr${result.entries === 1 ? 'y' : 'ies'}${
+      result.head ? c.dim(` · head ${String(result.head).slice(0, 16)}…`) : ''
+    }`,
+  );
+  if (result.fingerprintShort) console.log(`  Signer     ${result.fingerprintShort}`);
+  if (result.bundle) {
+    console.log(
+      `  Signature  ${result.signed ? c.green('ed25519 · verified') : c.red('missing or invalid')}`,
+    );
+  }
+  if (result.reports?.length) {
+    const counts = result.reports.reduce((acc, item) => {
+      acc[item.status] = (acc[item.status] || 0) + 1;
+      return acc;
+    }, {});
+    console.log(
+      `  Reports    ${Object.entries(counts)
+        .map(([key, value]) => `${value} ${key}`)
+        .join(' · ')}`,
+    );
+  }
+  for (const item of result.problems || []) {
+    const mark = item.severity === 'error' ? c.red('✖') : c.yellow('!');
+    console.log(`  ${mark} ${item.code}  ${item.message}`);
+  }
+  if (status === 'valid') {
+    console.log(c.dim('  Chain, signature, case notes, and attached report hashes all match.'));
+  }
+  return result;
+}
+
+async function commandCase(args, flags) {
+  const action = args[0] || 'list';
+  const id = args[1];
+
+  if (action === 'list') {
+    const cases = listCases();
+    const limit = parseCount(flags.limit, 50, 1, 1000, '--limit');
+    if (flags.json) {
+      console.log(JSON.stringify({ cases }, null, 2));
+      return cases;
+    }
+    console.log(`${c.bold(c.cyan('◆ ARGUS'))}  ${c.bold('cases')}  ${cases.length}`);
+    console.log('');
+    if (!cases.length) {
+      console.log(c.dim('  No cases yet. Create one with "argus case create <title>".'));
+      return cases;
+    }
+    console.log(
+      c.dim(`  ${'UPDATED'.padEnd(20)} ${'REPORTS'.padEnd(8)} ${'LEDGER'.padEnd(7)} ${'TITLE'.padEnd(34)} ID`),
+    );
+    for (const item of cases.slice(0, limit)) {
+      console.log(
+        `  ${String(item.updatedAt || '').slice(0, 19).padEnd(20)} ${String(item.reportCount).padEnd(8)} ${String(item.ledgerEntries).padEnd(7)} ${truncate(item.title, 34).padEnd(34)} ${item.id}`,
+      );
+    }
+    if (cases.length > limit) console.log(c.dim(`  … ${cases.length - limit} more (use --limit)`));
+    return cases;
+  }
+
+  if (action === 'create') {
+    const title = args.slice(1).join(' ').trim();
+    if (!title) throw usageError('Usage: argus case create <title> [--notes <text>]');
+    const record = createCase({ title, notes: flags.notes || '' });
+    console.log(c.green(`  Created ${record.id}`));
+    console.log(c.dim(`  Ledger started · signer ${record.ledger.signer.fingerprintShort}`));
+    return record;
+  }
+
+  if (action === 'show') {
+    if (!id) throw usageError('Usage: argus case show <case-id>');
+    const record = readCase(id);
+    if (flags.json) {
+      console.log(JSON.stringify(record, null, 2));
+      return record;
+    }
+    console.log(`${c.bold(c.cyan('◆ ARGUS'))}  ${c.bold(record.title)}`);
+    console.log(`  Case ID    ${record.id}`);
+    console.log(`  Created    ${record.createdAt}`);
+    console.log(`  Updated    ${record.updatedAt}`);
+    console.log(`  Reports    ${record.reportIds.length}`);
+    console.log(`  Analyses   ${record.analyses.length}`);
+    console.log(
+      `  Ledger     ${record.ledger?.entries?.length || 0} entries · signer ${
+        record.ledger?.signer?.fingerprintShort || '—'
+      }`,
+    );
+    if (record.notes) {
+      console.log('');
+      console.log(c.dim(`  ${truncate(record.notes.replace(/\\s+/g, ' '), 240)}`));
+    }
+    if (record.ledger?.entries?.length) {
+      console.log('');
+      console.log(c.dim('  LEDGER EVENTS'));
+      for (const entry of record.ledger.entries.slice(-12)) {
+        console.log(
+          `  ${String(entry.seq).padStart(3)}  ${String(entry.at).slice(0, 19)}  ${entry.type.padEnd(16)} ${truncate(
+            entry.details?.reportId || entry.details?.analysisId || entry.details?.title || '',
+            48,
+          )}`,
+        );
+      }
+      if (record.ledger.entries.length > 12) {
+        console.log(c.dim(`  … ${record.ledger.entries.length - 12} earlier event(s)`));
+      }
+    }
+    return record;
+  }
+
+  if (action === 'attach') {
+    const reportIds = args
+      .slice(2)
+      .join(',')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!id || !reportIds.length) throw usageError('Usage: argus case attach <case-id> <report-id,...>');
+    const record = attachReports(id, reportIds);
+    console.log(
+      c.green(
+        `  Attached ${reportIds.length} report(s). Ledger now has ${record.ledger.entries.length} entries.`,
+      ),
+    );
+    return record;
+  }
+
+  if (action === 'intel') {
+    if (!id) throw usageError('Usage: argus case intel <case-id> [--limit <n>]');
+    const intel = caseIntel(id);
+    if (flags.json) {
+      console.log(JSON.stringify(intel, null, 2));
+      return intel;
+    }
+    const limit = parseCount(flags.limit, 40, 1, 500, '--limit');
+    const repeated = intel.correlations?.repeatedIndicators || [];
+    console.log(
+      `${c.bold(c.cyan('◆ ARGUS'))}  ${c.bold('case intelligence')}  ${intel.caseTitle || intel.caseId}`,
+    );
+    console.log(
+      `  Coverage   ${intel.reportCount} report(s) · ${intel.coverage.datedFacts} dated fact(s) · ${intel.contradictions.count} contradiction(s) · ${repeated.length} repeated indicator(s)`,
+    );
+    if (intel.timeline.items.length) {
+      console.log('');
+      console.log(c.dim('  TIMELINE'));
+      for (const item of intel.timeline.items.slice(0, limit)) {
+        const stamp = `${item.at.slice(0, 10)} ${item.at.slice(11, 16)}`;
+        console.log(
+          `  ${stamp}  ${String(item.kind).padEnd(10)} ${truncate(item.label, 44).padEnd(44)} ${c.dim(
+            truncate(item.detail || item.reportId, 40),
+          )}`,
+        );
+      }
+      if (intel.timeline.items.length > limit) {
+        console.log(c.dim(`  … ${intel.timeline.items.length - limit} more (use --limit)`));
+      }
+    }
+    if (intel.contradictions.count) {
+      console.log('');
+      console.log(c.dim('  CONTRADICTIONS'));
+      for (const item of intel.contradictions.items) {
+        const mark =
+          item.severity === 'high'
+            ? c.red('✖')
+            : item.severity === 'medium'
+              ? c.yellow('!')
+              : item.severity === 'low'
+                ? c.cyan('·')
+                : c.dim('·');
+        console.log(`  ${mark} ${item.title} ${c.dim(`[${item.severity}]`)}`);
+        console.log(`    ${item.detail}`);
+        for (const cite of item.citations) {
+          console.log(c.dim(`    ${cite.reportId}  ${cite.field} = ${cite.value}`));
+        }
+      }
+    } else {
+      console.log(c.dim('  No deterministic contradictions found.'));
+    }
+    if (repeated.length) {
+      console.log('');
+      console.log(c.dim('  REPEATED INDICATORS'));
+      for (const item of repeated.slice(0, limit)) {
+        console.log(`  · ${String(item.type).padEnd(8)} ${truncate(item.value, 64)}`);
+        for (const entry of item.occurrences.slice(0, 5)) {
+          console.log(c.dim(`    ${entry.reportId}  ${entry.field || ''}  ${entry.evidence || ''}`));
+        }
+        if (item.occurrences.length > 5) {
+          console.log(c.dim(`    … ${item.occurrences.length - 5} more occurrence(s)`));
+        }
+      }
+      if (repeated.length > limit) {
+        console.log(c.dim(`  … ${repeated.length - limit} more indicator(s) (use --limit)`));
+      }
+    } else {
+      console.log(c.dim('  No exact indicators repeated across reports.'));
+    }
+    return intel;
+  }
+
+  if (action === 'verify') {
+    if (!id) throw usageError('Usage: argus case verify <case-id>');
+    const result = verifyCase(id);
+    if (flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
+    return printIntegrity(result);
+  }
+
+  if (action === 'export') {
+    if (!id) throw usageError('Usage: argus case export <case-id> [--out <path>]');
+    const { path, bundle } = exportCaseBundle(id, undefined, { outPath: flags.out });
+    if (flags.json) {
+      console.log(JSON.stringify({ path, manifest: bundle.manifest }, null, 2));
+      return { path, bundle };
+    }
+    let size = '';
+    try {
+      size = ` · ${formatBytes(statSync(path).size)}`;
+    } catch {
+      size = '';
+    }
+    console.log(c.green('  Signed case bundle written.'));
+    console.log(`  File       ${path}${c.dim(size)}`);
+    console.log(`  Reports    ${bundle.manifest.reportCount}`);
+    console.log(`  Entries    ${bundle.manifest.ledgerEntries}`);
+    console.log(`  Signer     ${bundle.manifest.signer.fingerprintShort}`);
+    console.log(c.dim('  Verify anywhere: argus case verify-bundle <file> --fingerprint <signer>'));
+    return { path, bundle };
+  }
+
+  if (action === 'verify-bundle' || action === 'verifybundle') {
+    const file = args[1];
+    if (!file) throw usageError('Usage: argus case verify-bundle <path> [--fingerprint <hex>]');
+    const result = verifyBundleFile(file, { fingerprint: flags.fingerprint || null });
+    if (flags.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return result;
+    }
+    return printIntegrity(result, { label: 'bundle integrity' });
+  }
+
+  if (action === 'delete') {
+    if (!id) throw usageError('Usage: argus case delete <case-id>');
+    deleteCase(id);
+    console.log(c.green(`  Deleted ${id} and its signing key.`));
+    return true;
+  }
+
+  throw usageError(
+    'Usage: argus case [list|show <id>|create <title>|attach <id> <report-id,...>|verify <id>|export <id>|verify-bundle <path>|delete <id>]',
+  );
+}
+
 async function commandServe(flags) {
   const port = parseCount(flags.port, 0, 0, 65535, '--port') || undefined;
   let running;
@@ -624,6 +912,7 @@ async function dispatch(argv, repl = false) {
   }
   if (command === 'sites') return { value: await commandSites(flags) };
   if (command === 'reports') return { value: await commandReports(args, flags) };
+  if (command === 'case') return { value: await commandCase(args, flags) };
   if (command === 'serve') {
     const running = await commandServe(flags);
     return { value: running, server: running, serve: !repl };

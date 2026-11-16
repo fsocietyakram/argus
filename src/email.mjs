@@ -7,6 +7,7 @@ import {
   stripHtml,
   truncate,
   uniq,
+  VERSION,
   withTimeout,
 } from './util.mjs';
 
@@ -366,7 +367,7 @@ export async function scanEmail(input, options = {}) {
     return {
       schema: 'argus.report/v1',
       command: 'email',
-      tool: { name: 'ARGUS', version: '1.0.0' },
+      tool: { name: 'ARGUS', version: VERSION },
       target: syntax.email,
       createdAt: startedAt.toISOString(),
       durationMs: Date.now() - started,
@@ -426,7 +427,7 @@ export async function scanEmail(input, options = {}) {
   return {
     schema: 'argus.report/v1',
     command: 'email',
-    tool: { name: 'ARGUS', version: '1.0.0' },
+    tool: { name: 'ARGUS', version: VERSION },
     target: email,
     createdAt: startedAt.toISOString(),
     durationMs: Date.now() - started,

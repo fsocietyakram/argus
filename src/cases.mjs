@@ -7,10 +7,27 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { dataDir, loadConfig } from './config.mjs';
 import { readReport } from './report.mjs';
+import { analyseCase } from './case-intel.mjs';
+import { correlateCaseReports } from './correlate.mjs';
+import {
+  BUNDLE_SCHEMA,
+  LedgerError,
+  appendLedgerEntry,
+  buildCaseBundle,
+  bootstrapLedger,
+  deleteCaseKey,
+  emptyLedger,
+  hashJson,
+  hashReport,
+  hashString,
+  readBundleFile,
+  verifyCaseBundle,
+  verifyLedger,
+} from './ledger.mjs';
 import { nowStamp, slugify, truncate, uniq } from './util.mjs';
 
 export const CASE_SCHEMA = 'argus.case/v1';
@@ -93,9 +110,17 @@ function normalizeCase(parsed, id) {
     notes: String(parsed?.notes || ''),
     reportIds: Array.isArray(parsed?.reportIds) ? parsed.reportIds.filter((value) => typeof value === 'string') : [],
     analyses: Array.isArray(parsed?.analyses) ? parsed.analyses : [],
+    ledger: parsed?.ledger && typeof parsed.ledger === 'object' ? parsed.ledger : null,
     createdAt: parsed?.createdAt || new Date().toISOString(),
     updatedAt: parsed?.updatedAt || parsed?.createdAt || new Date().toISOString(),
   };
+}
+
+function ensureLedger(record, config) {
+  if (record.ledger && Array.isArray(record.ledger.entries) && record.ledger.entries.length) {
+    return record;
+  }
+  return bootstrapLedger(record, config);
 }
 
 function writeCaseFile(record, config) {
@@ -129,9 +154,16 @@ export function createCase(input = {}, config = loadConfig()) {
     notes: normalizeCaseNotes(input.notes),
     reportIds: [],
     analyses: [],
+    ledger: emptyLedger(),
     createdAt: now,
     updatedAt: now,
   };
+  appendLedgerEntry(
+    record,
+    'case.created',
+    { title: record.title, titleHash: hashString(record.title), notesHash: hashString(record.notes) },
+    config,
+  );
   writeCaseFile(record, config);
   return record;
 }
@@ -166,6 +198,8 @@ export function listCases(config = loadConfig()) {
         notesPreview: truncate(record.notes, 180),
         reportCount: record.reportIds.length,
         analysisCount: record.analyses.length,
+        ledgerEntries: record.ledger?.entries?.length || 0,
+        fingerprintShort: record.ledger?.signer?.fingerprintShort || null,
         lastAnalysisAt: lastAnalysis?.createdAt || null,
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
@@ -178,10 +212,27 @@ export function listCases(config = loadConfig()) {
 }
 
 export function updateCase(id, input = {}, config = loadConfig()) {
-  const record = readCase(id, config);
+  const record = ensureLedger(readCase(id, config), config);
+  const before = { title: record.title, notes: record.notes };
   if (input.title !== undefined) record.title = normalizeCaseTitle(input.title);
   if (input.notes !== undefined) record.notes = normalizeCaseNotes(input.notes);
-  record.updatedAt = new Date().toISOString();
+  if (record.title !== before.title || record.notes !== before.notes) {
+    record.updatedAt = new Date().toISOString();
+    appendLedgerEntry(
+      record,
+      'case.updated',
+      {
+        title: record.title,
+        titleHash: hashString(record.title),
+        notesHash: hashString(record.notes),
+        changed: [
+          ...(record.title !== before.title ? ['title'] : []),
+          ...(record.notes !== before.notes ? ['notes'] : []),
+        ],
+      },
+      config,
+    );
+  }
   return writeCaseFile(record, config);
 }
 
@@ -191,16 +242,18 @@ export function deleteCase(id, config = loadConfig()) {
     throw new CaseError('Case not found.', { code: 'case_not_found', status: 404 });
   }
   unlinkSync(path);
+  deleteCaseKey(id, config);
   return true;
 }
 
 export function attachReports(id, reportIds, config = loadConfig()) {
-  const record = readCase(id, config);
+  const record = ensureLedger(readCase(id, config), config);
   const ids = normalizeReportIds(reportIds, { existing: record.reportIds });
   const missing = [];
+  const loaded = new Map();
   for (const reportId of ids) {
     try {
-      readReport(reportId, config);
+      loaded.set(reportId, readReport(reportId, config));
     } catch {
       missing.push(reportId);
     }
@@ -212,13 +265,22 @@ export function attachReports(id, reportIds, config = loadConfig()) {
       missing,
     });
   }
+  const fresh = ids.filter((reportId) => !record.reportIds.includes(reportId));
   record.reportIds = uniq([...record.reportIds, ...ids]);
   record.updatedAt = new Date().toISOString();
+  for (const reportId of fresh) {
+    appendLedgerEntry(
+      record,
+      'report.attached',
+      { reportId, reportHash: hashReport(loaded.get(reportId)) },
+      config,
+    );
+  }
   return writeCaseFile(record, config);
 }
 
 export function removeReport(id, reportId, config = loadConfig()) {
-  const record = readCase(id, config);
+  const record = ensureLedger(readCase(id, config), config);
   if (!record.reportIds.includes(reportId)) {
     throw new CaseError('That report is not attached to this case.', {
       code: 'report_not_attached',
@@ -227,11 +289,12 @@ export function removeReport(id, reportId, config = loadConfig()) {
   }
   record.reportIds = record.reportIds.filter((value) => value !== reportId);
   record.updatedAt = new Date().toISOString();
+  appendLedgerEntry(record, 'report.removed', { reportId }, config);
   return writeCaseFile(record, config);
 }
 
 export function addAnalysis(id, analysisRecord = {}, config = loadConfig()) {
-  const record = readCase(id, config);
+  const record = ensureLedger(readCase(id, config), config);
   if (!analysisRecord?.analysis || typeof analysisRecord.analysis !== 'object') {
     throw new CaseError('A structured analysis is required.', {
       code: 'invalid_analysis',
@@ -251,20 +314,131 @@ export function addAnalysis(id, analysisRecord = {}, config = loadConfig()) {
 
   record.analyses = [...record.analyses, stored].slice(-MAX_CASE_ANALYSES);
   record.updatedAt = stored.createdAt;
+  appendLedgerEntry(
+    record,
+    'analysis.saved',
+    {
+      analysisId: stored.id,
+      model: stored.model,
+      evidenceHash: hashJson(stored.evidence),
+      outputHash: hashJson(stored.analysis),
+    },
+    config,
+  );
   writeCaseFile(record, config);
   return { case: record, analysis: stored };
 }
 
 export function deleteAnalysis(id, analysisId, config = loadConfig()) {
-  const record = readCase(id, config);
+  const record = ensureLedger(readCase(id, config), config);
   const before = record.analyses.length;
   record.analyses = record.analyses.filter((analysis) => analysis.id !== analysisId);
   if (record.analyses.length === before) {
     throw new CaseError('Analysis not found.', { code: 'analysis_not_found', status: 404 });
   }
   record.updatedAt = new Date().toISOString();
+  appendLedgerEntry(record, 'analysis.deleted', { analysisId }, config);
   writeCaseFile(record, config);
   return record;
+}
+
+/* ------------------------------------------------------------------ */
+/* Integrity and bundles                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Verify a stored case without changing it. Returns a stable shape used by the
+ * CLI, the API, and the web UI.
+ */
+export function verifyCase(id, config = loadConfig()) {
+  const record = readCase(id, config);
+  return verifyLedger(record, config);
+}
+
+/**
+ * Deterministic timeline and contradiction checks over the attached reports.
+ * No model, no network, every item cites a report id and a JSON field path.
+ */
+export function caseIntel(id, config = loadConfig()) {
+  const record = readCase(id, config);
+  const reports = loadCaseReports(record, config);
+  return { ...analyseCase(record, reports), correlations: correlateCaseReports(reports) };
+}
+
+/** Read every attached report, or fail with the exact list that is missing. */
+function loadCaseReports(record, config) {
+  const reports = [];
+  const missing = [];
+  for (const reportId of record.reportIds) {
+    try {
+      reports.push({ id: reportId, report: readReport(reportId, config) });
+    } catch {
+      missing.push(reportId);
+    }
+  }
+  if (missing.length) {
+    throw new CaseError(
+      `Cannot bundle missing report(s): ${missing.join(', ')}. Re-attach or remove them first.`,
+      { code: 'missing_reports', status: 409, missing },
+    );
+  }
+  return reports;
+}
+
+/**
+ * Sign and write a self-contained `.arguscase` bundle. Defaults to
+ * data/bundles/<case-id>.arguscase so bundles never land in the repo.
+ */
+export function exportCaseBundle(id, config = loadConfig(), { outPath = null } = {}) {
+  let record = readCase(id, config);
+  if (!record.ledger?.entries?.length) {
+    record = bootstrapLedger(record, config);
+    writeCaseFile(record, config);
+  }
+  const reports = loadCaseReports(record, config);
+  const intel = { ...analyseCase(record, reports), correlations: correlateCaseReports(reports) };
+  let bundle;
+  try {
+    bundle = buildCaseBundle(record, reports, config, { intel });
+  } catch (err) {
+    if (err instanceof LedgerError && err.code === 'key_mismatch') {
+      throw new CaseError(
+        'The case signing key no longer matches its ledger. Restore data/case-keys/ from backup or create a new case.',
+        { code: 'key_mismatch', status: 409 },
+      );
+    }
+    throw err;
+  }
+
+  const target =
+    outPath && String(outPath).trim()
+      ? String(outPath).trim()
+      : join(dataDir(config), 'bundles', `${record.id}.arguscase`);
+  mkdirSync(dirname(target), { recursive: true });
+  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(bundle, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    chmodSync(temp, 0o600);
+  } catch {
+    /* ignore */
+  }
+  renameSync(temp, target);
+  return { path: target, bundle, case: record };
+}
+
+/**
+ * Verify a bundle file without touching the original case or private key.
+ * `fingerprint` pins the signer out of band.
+ */
+export function verifyBundleFile(path, { fingerprint = null } = {}) {
+  const bundle = readBundleFile(path);
+  if (bundle?.manifest?.schema !== BUNDLE_SCHEMA && bundle?.manifest?.schema) {
+    throw new LedgerError(`Unsupported bundle schema: ${bundle.manifest.schema}`, {
+      code: 'bundle_schema',
+      status: 400,
+    });
+  }
+  return { path, ...verifyCaseBundle(bundle, { fingerprint }) };
 }
 
 export function caseStats(config = loadConfig()) {

@@ -251,6 +251,38 @@
 
         <div class="case-section">
           <div class="panel-head">
+            <h3>What the evidence shows</h3>
+            <div class="actions-row">
+              <button type="button" class="secondary" id="case-intel-refresh">Refresh</button>
+            </div>
+          </div>
+          <p class="muted small">
+            Built locally from the attached reports — no AI, no network. Shows a timeline, exact
+            indicators repeated across reports, and contradiction checks. Every item cites a report
+            id and a JSON field, so you can check it yourself.
+          </p>
+          <div id="case-intel"><p class="muted small">Attach reports to build a timeline and run contradiction checks.</p></div>
+        </div>
+
+        <div class="case-section">
+          <div class="panel-head">
+            <h3>Evidence integrity</h3>
+            <div class="actions-row">
+              <button type="button" class="secondary" id="case-verify">Verify integrity</button>
+              <button type="button" class="secondary" id="case-bundle">Export signed bundle</button>
+            </div>
+          </div>
+          <p class="muted small">
+            Every case change is appended to a signed hash chain. Verification re-hashes the case
+            fields, every attached report, and every saved analysis, so edits are visible. Export
+            writes a self-contained <code>.arguscase</code> file that anyone can verify without your
+            private key.
+          </p>
+          <div id="case-integrity"><p class="muted small">Run a verification to check the chain, signature, and report hashes.</p></div>
+        </div>
+
+        <div class="case-section">
+          <div class="panel-head">
             <h3>AI analysis</h3>
             <div class="actions-row">
               <button type="button" class="primary" id="case-analyze">Analyze case</button>

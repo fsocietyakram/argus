@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 
 export const TOOL = 'ARGUS';
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 export const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 

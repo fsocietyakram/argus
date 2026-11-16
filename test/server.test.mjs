@@ -196,6 +196,46 @@ test('static serving rejects path traversal', async () => {
   assert.equal(response.status, 403);
 });
 
+test('case integrity and signed bundle endpoints work end to end', async () => {
+  const created = await fetch(`${base}/api/cases`, {
+    method: 'POST',
+    headers: { ...argusHeaders, 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Integrity API case', notes: 'Signed from the API' }),
+  });
+  assert.equal(created.status, 201);
+  const { case: record } = await created.json();
+  assert.deepEqual(record.correlations, { timeline: [], repeatedIndicators: [] });
+
+  const verify = await fetch(`${base}/api/cases/${record.id}/verify`);
+  assert.equal(verify.status, 200);
+  const { verification } = await verify.json();
+  assert.equal(verification.status, 'valid');
+  assert.equal(verification.signed, true);
+  assert.equal(verification.entries, 1);
+  assert.match(verification.fingerprint, /^[0-9a-f]{64}$/);
+
+  const bundleResponse = await fetch(`${base}/api/cases/${record.id}/bundle`);
+  assert.equal(bundleResponse.status, 200);
+  assert.match(bundleResponse.headers.get('content-disposition'), /attachment; filename=.*\.arguscase/);
+  const bundle = await bundleResponse.json();
+  assert.equal(bundle.manifest.schema, 'argus.bundle/v1');
+  assert.equal(bundle.manifest.caseId, record.id);
+  assert.equal(bundle.manifest.ledgerEntries, 1);
+  assert.ok(bundle.signature);
+  assert.equal(bundle.intel?.schema, 'argus.case-intel/v1');
+  assert.ok(Array.isArray(bundle.intel.correlations.repeatedIndicators));
+
+  const intel = await fetch(`${base}/api/cases/${record.id}/intel`);
+  assert.equal(intel.status, 200);
+  const { intel: analysis } = await intel.json();
+  assert.equal(analysis.schema, 'argus.case-intel/v1');
+  assert.equal(analysis.caseId, record.id);
+  assert.equal(analysis.reportCount, 0);
+  assert.equal(analysis.timeline.count, 0);
+  assert.equal(analysis.contradictions.count, 0);
+  assert.deepEqual(analysis.correlations, { timeline: [], repeatedIndicators: [] });
+});
+
 test('reports and audit endpoints are available', async () => {
   const reports = await fetch(`${base}/api/reports`);
   assert.equal(reports.status, 200);

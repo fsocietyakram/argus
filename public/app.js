@@ -13,6 +13,10 @@ const state = {
   cases: [],
   activeCase: null,
   casePreview: null,
+  caseIntel: null,
+  caseIntelFor: null,
+  caseIntegrity: null,
+  caseIntegrityFor: null,
   aiSettings: null,
 };
 
@@ -1327,7 +1331,7 @@ function renderCaseList() {
     return;
   }
   host.innerHTML = `<table class="data-table">
-    <thead><tr><th>Updated</th><th>Title</th><th>Reports</th><th>Analyses</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Updated</th><th>Title</th><th>Reports</th><th>Analyses</th><th>Ledger</th><th>Actions</th></tr></thead>
     <tbody>${state.cases
       .map(
         (item) => `<tr>
@@ -1335,6 +1339,13 @@ function renderCaseList() {
           <td>${esc(item.title)}</td>
           <td>${item.reportCount ?? 0}</td>
           <td>${item.analysisCount ?? 0}</td>
+          <td>${
+            item.ledgerEntries
+              ? `<span class="chip good">${item.ledgerEntries} signed</span>${
+                  item.fingerprintShort ? `<div class="mono small muted">${esc(item.fingerprintShort)}</div>` : ''
+                }`
+              : '<span class="chip warn">unsigned</span>'
+          }</td>
           <td><button type="button" class="secondary" data-open-case="${esc(item.id)}">Open</button></td>
         </tr>`,
       )
@@ -1506,6 +1517,271 @@ function renderCaseAnalyses() {
   });
 }
 
+const INTEL_KIND_LABELS = {
+  collection: 'collection',
+  metadata: 'metadata',
+  gps: 'gps',
+  account: 'account',
+  domain: 'domain',
+  breach: 'breach',
+};
+
+const SEVERITY_RANK = { high: 0, medium: 1, low: 2, info: 3 };
+
+function intelCacheKey(record) {
+  if (!record) return null;
+  return `${record.id}|${record.updatedAt}|${(record.reportIds || []).join(',')}`;
+}
+
+function renderCaseIntel() {
+  const host = $('#case-intel');
+  if (!host) return;
+  const record = state.activeCase;
+  if (!record) {
+    host.innerHTML = '';
+    return;
+  }
+  const intel =
+    state.caseIntel && state.caseIntelFor === intelCacheKey(record) ? state.caseIntel : null;
+
+  if (!record.reportIds?.length) {
+    host.innerHTML =
+      '<p class="muted small">Attach at least one saved report to build a timeline and run contradiction checks.</p>';
+    return;
+  }
+
+  if (!intel) {
+    host.innerHTML = '<p class="muted small">Building timeline…</p>';
+    return;
+  }
+
+  const coverage = intel.coverage || {};
+  const timelineItems = intel.timeline?.items || [];
+  const repeated =
+    intel.correlations?.repeatedIndicators || record.correlations?.repeatedIndicators || [];
+  const contradictions = (intel.contradictions?.items || [])
+    .slice()
+    .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
+
+  const coverageBits = [
+    `${coverage.reports || 0} report(s)`,
+    `${coverage.datedFacts || 0} dated fact(s)`,
+    `${coverage.profiles || 0} profile field(s)`,
+    `${coverage.files || 0} file(s)`,
+    `${coverage.emails || 0} email(s)`,
+    `${coverage.domains || 0} domain(s)`,
+  ];
+
+  const contradictionBlock = contradictions.length
+    ? contradictions
+        .map(
+          (item) => `<details class="intel-finding severity-${esc(item.severity)}">
+            <summary>
+              <span class="chip ${item.severity === 'high' ? 'bad' : item.severity === 'medium' ? 'warn' : 'info'}">${esc(item.severity)}</span>
+              <strong>${esc(item.title)}</strong>
+              <span class="muted small">${esc(item.kind)}</span>
+            </summary>
+            <p class="small">${esc(item.detail)}</p>
+            <ul class="intel-citations">
+              ${(item.citations || [])
+                .map(
+                  (cite) => `<li>
+                    <span class="mono small">${esc(cite.reportId)}</span>
+                    <span class="mono small muted">${esc(cite.field)}</span>
+                    <span class="small">${esc(cite.value)}</span>
+                  </li>`,
+                )
+                .join('')}
+            </ul>
+          </details>`,
+        )
+        .join('')
+    : '<p class="muted small">No deterministic contradictions found. That is not proof of consistency — it means the checks found nothing to flag.</p>';
+
+  const repeatedBlock = repeated.length
+    ? `<div class="correlation-grid">${repeated
+        .map(
+          (item) => `<article>
+            <strong>${esc(item.type)} · ${esc(item.value)}</strong>
+            <ul>${(item.occurrences || [])
+              .map(
+                (entry) => `<li><span class="mono small">${esc(entry.reportId)}</span> <span class="mono small muted">${esc(entry.field || '')}</span> ${esc(entry.evidence)}</li>`,
+              )
+              .join('')}</ul>
+          </article>`,
+        )
+        .join('')}</div>`
+    : '<p class="muted small">No exact shared indicators were found across readable attached reports. A repeated value is a lead to verify, not proof of common ownership.</p>';
+
+  const timelineRows = timelineItems.length
+    ? timelineItems
+        .slice(0, 60)
+        .map(
+          (item) => `<tr>
+            <td class="mono small nowrap">${esc(String(item.at).slice(0, 16).replace('T', ' '))}</td>
+            <td><span class="chip kind-${esc(item.kind)}">${esc(INTEL_KIND_LABELS[item.kind] || item.kind)}</span></td>
+            <td>${esc(item.label)}${item.detail ? `<div class="muted small">${esc(item.detail)}</div>` : ''}</td>
+            <td class="mono small">${esc(item.reportId)}<div class="muted">${esc(item.field)}</div></td>
+          </tr>`,
+        )
+        .join('')
+    : '<tr><td colspan="4" class="muted small">No dated facts were found in the attached reports.</td></tr>';
+
+  host.innerHTML = `
+    <p class="muted small">${coverageBits.map((bit) => esc(bit)).join(' · ')}</p>
+    <div class="intel-summary">
+      <span class="chip ${contradictions.length ? 'warn' : 'good'}">${contradictions.length} contradiction(s)</span>
+      <span class="chip">${repeated.length} repeated indicator(s)</span>
+      <span class="chip">${timelineItems.length} timeline item(s)</span>
+      ${intel.timeline?.first ? `<span class="muted small">${esc(fmtDate(intel.timeline.first))} → ${esc(fmtDate(intel.timeline.last))}</span>` : ''}
+    </div>
+    <h4 class="intel-head">Contradictions and anomalies</h4>
+    ${contradictionBlock}
+    <h4 class="intel-head">Repeated indicators across reports</h4>
+    ${repeatedBlock}
+    <h4 class="intel-head">Timeline ${timelineItems.length > 60 ? `<span class="muted small">(showing 60 of ${timelineItems.length})</span>` : ''}</h4>
+    <div class="table-scroll">
+      <table class="data-table compact intel-timeline">
+        <thead><tr><th>When (UTC)</th><th>Kind</th><th>Fact</th><th>Citation</th></tr></thead>
+        <tbody>${timelineRows}</tbody>
+      </table>
+    </div>
+    <p class="muted small">Generated locally at ${esc(fmtDate(intel.generatedAt))}. No network calls, no model. Timestamps from EXIF carry no timezone. Repeated values and flagged anomalies are review leads, not conclusions.</p>`;
+}
+
+async function loadCaseIntel({ quiet = false } = {}) {
+  const record = state.activeCase;
+  if (!record) return;
+  const button = $('#case-intel-refresh');
+  if (button) button.disabled = true;
+  const cacheKey = intelCacheKey(record);
+  if (!quiet) renderCaseIntel();
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(record.id)}/intel`);
+    if (state.activeCase?.id !== record.id) return;
+    state.caseIntel = data.intel;
+    state.caseIntelFor = cacheKey;
+    renderCaseIntel();
+    if (!quiet) toast('Timeline and contradiction checks rebuilt.', 'success');
+  } catch (err) {
+    if (!quiet) toast(err.message, 'error');
+    const host = $('#case-intel');
+    if (host && state.caseIntelFor !== cacheKey) {
+      host.innerHTML = `<div class="callout error"><strong>Could not build intelligence.</strong><p>${esc(err.message)}</p></div>`;
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderCaseIntegrity() {
+  const host = $('#case-integrity');
+  if (!host) return;
+  const record = state.activeCase;
+  if (!record) {
+    host.innerHTML = '';
+    return;
+  }
+  const result =
+    state.caseIntegrity &&
+    state.caseIntegrity.caseId === record.id &&
+    state.caseIntegrityFor === record.updatedAt
+      ? state.caseIntegrity
+      : null;
+  const ledger = record.ledger || null;
+  const entries = ledger?.entries?.length || 0;
+  const fingerprint = ledger?.signer?.fingerprintShort || '—';
+  const head = ledger?.head ? `${String(ledger.head).slice(0, 16)}…` : '—';
+  const statusChip = result
+    ? `<span class="chip ${result.status === 'valid' ? 'good' : result.status === 'unsigned' ? 'warn' : 'bad'}">${esc(result.status)}</span>`
+    : '<span class="chip">not checked</span>';
+
+  const facts = [
+    ['Ledger', `${entries} entr${entries === 1 ? 'y' : 'ies'} · head ${head}`],
+    ['Signer', fingerprint],
+  ];
+  if (result?.checkedAt) facts.push(['Checked', fmtDate(result.checkedAt)]);
+
+  const problems = (result?.problems || []).length
+    ? `<ul class="integrity-problems">${result.problems
+        .map(
+          (item) =>
+            `<li><span class="chip ${item.severity === 'error' ? 'bad' : 'warn'}">${esc(item.severity)}</span> <code>${esc(item.code)}</code> ${esc(item.message)}</li>`,
+        )
+        .join('')}</ul>`
+    : result
+      ? '<p class="muted small">No problems found.</p>'
+      : '';
+
+  const reportRows = result?.reports?.length
+    ? `<table class="data-table compact">
+        <thead><tr><th>Report</th><th>Status</th><th>Hash</th></tr></thead>
+        <tbody>${result.reports
+          .map((item) => {
+            const hash = item.hash || item.actualHash || '';
+            return `<tr>
+              <td class="mono">${esc(item.reportId)}</td>
+              <td><span class="chip ${item.status === 'match' ? 'good' : item.status === 'unhashed' ? 'warn' : 'bad'}">${esc(item.status)}</span></td>
+              <td class="mono small">${hash ? `${esc(hash.slice(0, 16))}…` : '—'}</td>
+            </tr>`;
+          })
+          .join('')}</tbody></table>`
+    : '';
+
+  host.innerHTML = `
+    <div class="integrity-summary">
+      <div>${statusChip}</div>
+      <dl class="integrity-facts">${facts
+        .map(([key, value]) => `<div><dt>${esc(key)}</dt><dd class="mono">${esc(value)}</dd></div>`)
+        .join('')}</dl>
+    </div>
+    ${
+      result
+        ? `<p class="muted small">${result.errorCount} error(s) · ${result.warningCount} warning(s).${
+            result.status === 'valid'
+              ? ' Chain, signature, case notes, and attached report hashes match.'
+              : ''
+          }</p>`
+        : ''
+    }
+    ${problems}
+    ${reportRows}`;
+}
+
+async function verifyCaseIntegrity({ quiet = false } = {}) {
+  const record = state.activeCase;
+  if (!record) return;
+  const button = $('#case-verify');
+  if (button) button.disabled = true;
+  const host = $('#case-integrity');
+  if (host && !quiet) host.innerHTML = '<p class="muted small">Verifying…</p>';
+  try {
+    const data = await api(
+      `/api/cases/${encodeURIComponent(record.id)}/verify${quiet ? '?audit=0' : ''}`,
+    );
+    state.caseIntegrity = data.verification;
+    state.caseIntegrityFor = record.updatedAt;
+    renderCaseIntegrity();
+    if (!quiet) {
+      toast(
+        data.verification.status === 'valid' ? 'Integrity verified.' : 'Integrity check found problems.',
+        data.verification.status === 'valid' ? 'success' : 'error',
+      );
+    }
+  } catch (err) {
+    if (!quiet) toast(err.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function exportCaseBundle() {
+  const record = state.activeCase;
+  if (!record) return;
+  window.location.href = `/api/cases/${encodeURIComponent(record.id)}/bundle`;
+  toast('Preparing signed bundle…', 'success');
+}
+
 function renderCase() {
   const record = state.activeCase;
   const editor = $('#case-editor');
@@ -1551,16 +1827,6 @@ function renderCase() {
         .join('')}</tbody></table>`;
   }
 
-  const correlations = record.correlations || {};
-  const repeated = correlations.repeatedIndicators || [];
-  const timeline = correlations.timeline || [];
-  reportsHost.insertAdjacentHTML('beforeend', `<section class="case-correlations">
-    <h3>Cross-report intelligence</h3>
-    <p class="muted small">${repeated.length} exact repeated indicator(s). Matches are review leads, not proof of common ownership.</p>
-    ${repeated.length ? `<div class="correlation-grid">${repeated.map((item) => `<article><strong>${esc(item.type)} · ${esc(item.value)}</strong><ul>${item.occurrences.map((entry) => `<li><span class="mono">${esc(entry.reportId)}</span> — ${esc(entry.evidence)}</li>`).join('')}</ul></article>`).join('')}</div>` : '<p class="muted small">No exact shared indicators found in readable attached reports.</p>'}
-    <h4>Evidence timeline</h4><ol>${timeline.map((entry) => `<li>${esc(fmtDate(entry.createdAt))} · ${esc(COMMAND_LABELS[entry.command] || entry.command || 'Report')} · ${esc(entry.target || '')} <span class="mono">${esc(entry.reportId)}</span></li>`).join('') || '<li class="muted">No readable reports.</li>'}</ol>
-  </section>`);
-
   $$('button[data-remove-report]', reportsHost).forEach((button) => {
     button.addEventListener('click', () => removeCaseReport(button.dataset.removeReport));
   });
@@ -1572,6 +1838,11 @@ function renderCase() {
 
   renderCasePreview();
   renderCaseAnalyses();
+  renderCaseIntegrity();
+  renderCaseIntel();
+  if (record.reportIds?.length && state.caseIntelFor !== intelCacheKey(record)) {
+    loadCaseIntel({ quiet: true });
+  }
   loadCaseReportOptions();
 }
 
@@ -1585,6 +1856,7 @@ async function openCase(id) {
     renderCase();
     if (host) renderCaseList();
     $('#case-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    verifyCaseIntegrity({ quiet: true });
   } catch (err) {
     toast(err.message, 'error');
     refreshCases();
@@ -1827,6 +2099,9 @@ function initCases() {
   $('#case-delete')?.addEventListener('click', deleteCase);
   $('#case-attach')?.addEventListener('click', attachCaseReport);
   $('#case-analyze')?.addEventListener('click', analyzeCase);
+  $('#case-verify')?.addEventListener('click', () => verifyCaseIntegrity());
+  $('#case-bundle')?.addEventListener('click', exportCaseBundle);
+  $('#case-intel-refresh')?.addEventListener('click', () => loadCaseIntel());
 }
 
 /* ------------------------------------------------------------------ */

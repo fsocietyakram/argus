@@ -1,6 +1,6 @@
 {
   "name": "argus",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Zero-dependency public-data OSINT and file metadata forensics toolkit with a CLI and local web UI.",

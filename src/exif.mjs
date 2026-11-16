@@ -1,6 +1,6 @@
 import { inflateSync } from 'node:zlib';
 import { basename, extname } from 'node:path';
-import { md5, sha1, sha256, uniq, formatBytes, truncate } from './util.mjs';
+import { md5, sha1, sha256, uniq, formatBytes, truncate, VERSION } from './util.mjs';
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -1050,7 +1050,7 @@ export function analyzeFile(buffer, filename = 'file') {
   return {
     schema: 'argus.report/v1',
     command: 'file',
-    tool: { name: 'ARGUS', version: '1.0.0' },
+    tool: { name: 'ARGUS', version: VERSION },
     target: basename(filename || 'file'),
     createdAt: new Date().toISOString(),
     durationMs: Date.now() - started,

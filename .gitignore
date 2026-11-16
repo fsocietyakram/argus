@@ -28,3 +28,5 @@ Thumbs.db
 # Local artifacts
 stripped-*
 *.log
+.smoke/
+*.arguscase
