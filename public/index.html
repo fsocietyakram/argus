@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>ARGUS · Public-data OSINT &amp; forensics</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◈</span>
+      <span>ARGUS</span>
+      <span class="tag">public-data OSINT</span>
+    </div>
+    <div class="header-right">
+      <span id="hibp-badge" class="pill" title="Set the HIBP_API_KEY environment variable to enable breach checks">Breach API: checking…</span>
+      <span class="pill local" title="The server binds to loopback only">Local only</span>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Tools">
+    <button class="tab active" data-tab="username">Username search</button>
+    <button class="tab" data-tab="email">Email checks</button>
+    <button class="tab" data-tab="file">File metadata</button>
+    <button class="tab" data-tab="reports">Reports</button>
+  </nav>
+
+  <main>
+    <!-- --------------------------- Username --------------------------- -->
+    <section id="tab-username" class="tab-panel active">
+      <div class="panel hero-panel">
+        <h1>Username search</h1>
+        <p class="muted">
+          Checks a username against a configurable registry of public profile pages and APIs.
+          Every result names its source, confidence, and retrieval time. A shared username is
+          <strong>not</strong> proof that two accounts belong to the same person.
+        </p>
+      </div>
+
+      <form id="username-form" class="panel" novalidate>
+        <label class="field-label" for="username-input">Username or profile URL</label>
+        <div class="input-row">
+          <span class="prefix">@</span>
+          <input id="username-input" name="username" placeholder="example" autocomplete="off" spellcheck="false" required>
+          <button type="submit" class="primary" id="username-submit">Search sources</button>
+        </div>
+        <div class="helper-row">
+          <span class="muted small">Paste a profile URL or plain username. Leading @ is optional.</span>
+          <button type="button" class="link-button" id="clear-categories">Clear category filter</button>
+        </div>
+        <div id="username-categories" class="chips categories" aria-label="Categories"></div>
+
+        <details class="sources-block">
+          <summary>Sources &amp; per-source settings <span id="source-count" class="muted"></span></summary>
+          <p class="muted small">
+            Each connector declares its access method, rate limit, and terms-of-use note.
+            Disabling a source writes to <code>argus.config.json</code>.
+          </p>
+          <div id="source-list" class="source-list"></div>
+        </details>
+      </form>
+
+      <section id="username-progress" class="panel progress-panel hidden" aria-live="polite">
+        <div class="progress-head">
+          <strong>Scanning public sources…</strong>
+          <span class="muted" id="username-progress-count">0 / 0</span>
+        </div>
+        <div class="progress-bar"><span id="username-progress-fill"></span></div>
+        <div class="progress-current muted" id="username-progress-current">Starting…</div>
+        <div class="progress-log" id="username-progress-log"></div>
+      </section>
+
+      <div id="username-result" class="hidden"></div>
+    </section>
+
+    <!-- ----------------------------- Email ---------------------------- -->
+    <section id="tab-email" class="tab-panel">
+      <div class="panel hero-panel">
+        <h1>Email checks</h1>
+        <p class="muted">
+          Validates the address, inspects public DNS and email-authentication records, checks for a
+          public Gravatar profile and GitHub mentions, and — if configured — looks up public breach
+          metadata. No login, password reset, inbox access, or credential collection is attempted.
+        </p>
+      </div>
+
+      <form id="email-form" class="panel" novalidate>
+        <label class="field-label" for="email-input">Email address</label>
+        <div class="input-row">
+          <input id="email-input" type="email" placeholder="name@example.com" autocomplete="off" spellcheck="false" required>
+          <button type="submit" class="primary" id="email-submit">Run checks</button>
+        </div>
+        <label class="check-row">
+          <input type="checkbox" id="email-linked">
+          <span>Also scan usernames derived from the local part <span class="muted small">(extra requests; may produce false positives)</span></span>
+        </label>
+        <p class="muted small" id="hibp-note"></p>
+      </form>
+
+      <section id="email-progress" class="panel progress-panel hidden" aria-live="polite">
+        <div class="progress-head">
+          <strong>Running checks…</strong>
+          <span class="muted" id="email-timer">0s</span>
+        </div>
+        <div class="progress-bar indeterminate"><span></span></div>
+        <div class="progress-current muted">Querying DNS, Gravatar, breach metadata, and public mentions…</div>
+      </section>
+
+      <div id="email-result" class="hidden"></div>
+    </section>
+
+    <!-- ----------------------------- File ----------------------------- -->
+    <section id="tab-file" class="tab-panel">
+      <div class="panel hero-panel">
+        <h1>File metadata analysis</h1>
+        <p class="muted">
+          Reads EXIF and document metadata from a file you are authorised to examine. Files are
+          processed in memory and are <strong>never uploaded to a third party</strong>. Reports are
+          not saved unless you ask. You can download a metadata-stripped copy without modifying the original.
+        </p>
+      </div>
+
+      <div class="panel">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose a file to analyse">
+          <input type="file" id="file-input" hidden>
+          <div class="drop-icon" aria-hidden="true">⇪</div>
+          <p><strong>Drop a file here</strong> or click to choose</p>
+          <p class="muted small" id="upload-limit">JPEG, PNG, WebP, GIF, TIFF, HEIC, PDF — up to 30 MB</p>
+          <p class="file-name" id="file-name"></p>
+        </div>
+        <div class="actions-row">
+          <label class="check-row">
+            <input type="checkbox" id="file-save">
+            <span>Save this report locally <span class="muted small">(metadata may be sensitive)</span></span>
+          </label>
+          <button type="button" class="primary" id="file-analyze" disabled>Analyse file</button>
+        </div>
+      </div>
+
+      <section id="file-progress" class="panel progress-panel hidden" aria-live="polite">
+        <div class="progress-head"><strong>Reading metadata…</strong><span class="muted">in memory</span></div>
+        <div class="progress-bar indeterminate"><span></span></div>
+      </section>
+
+      <div id="file-result" class="hidden"></div>
+    </section>
+
+    <!-- ---------------------------- Reports --------------------------- -->
+    <section id="tab-reports" class="tab-panel">
+      <div class="panel hero-panel">
+        <h1>Reports &amp; audit log</h1>
+        <p class="muted">
+          Reports are stored locally as JSON and standalone HTML. Retention and maximum count are
+          configurable. Delete individual reports or all data at any time. The audit log records actions,
+          not findings.
+        </p>
+        <div class="stats-row" id="report-stats"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Saved reports</h2>
+          <div class="actions-row">
+            <button type="button" class="secondary" id="reports-refresh">Refresh</button>
+            <button type="button" class="danger" id="reports-delete-all">Delete all data</button>
+          </div>
+        </div>
+        <div id="reports-table"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Audit log</h2>
+          <div class="actions-row">
+            <button type="button" class="secondary" id="audit-load">Show recent activity</button>
+            <button type="button" class="danger" id="audit-clear">Clear audit log</button>
+          </div>
+        </div>
+        <p class="muted small">Targets can be redacted in <code>argus.config.json</code> by setting <code>logTargetsInAudit</code> to <code>false</code>.</p>
+        <div id="audit-table"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>
+      <strong>Authorised use only.</strong> ARGUS queries publicly accessible pages and APIs, respects
+      robots.txt where applicable, and never bypasses logins, CAPTCHAs, paywalls, or access controls.
+      Results can be incomplete or wrong. Matching usernames or metadata are not proof of identity.
+      Delete reports when they are no longer needed.
+    </p>
+  </footer>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <noscript><p class="panel">ARGUS needs JavaScript enabled for the local interface. You can also use the CLI.</p></noscript>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

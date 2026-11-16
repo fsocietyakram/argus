@@ -1,0 +1,31 @@
+{
+  "name": "argus",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency public-data OSINT and file metadata forensics toolkit with a CLI and local web UI.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "argus": "./argus.mjs"
+  },
+  "main": "./src/server.mjs",
+  "scripts": {
+    "start": "node argus.mjs serve",
+    "web": "node argus.mjs serve",
+    "cli": "node argus.mjs",
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  },
+  "keywords": [
+    "osint",
+    "forensics",
+    "exif",
+    "metadata",
+    "privacy",
+    "username",
+    "kali"
+  ]
+}
