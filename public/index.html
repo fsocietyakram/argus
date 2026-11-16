@@ -4,15 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0b0c">
   <title>ARGUS · Public-data OSINT &amp; forensics</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="app-header">
     <div class="brand">
-      <span class="logo" aria-hidden="true">◈</span>
-      <span>ARGUS</span>
-      <span class="tag">public-data OSINT</span>
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <span class="brand-text">
+        <span class="brand-name">ARGUS</span>
+        <span class="tag">public-data OSINT &amp; forensics</span>
+      </span>
     </div>
     <div class="header-right">
       <span id="hibp-badge" class="pill" title="Set the HIBP_API_KEY environment variable to enable breach checks">Breach API: checking…</span>
@@ -127,7 +131,7 @@
       <div class="panel">
         <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose a file to analyse">
           <input type="file" id="file-input" hidden>
-          <div class="drop-icon" aria-hidden="true">⇪</div>
+          <div class="drop-icon" aria-hidden="true">[ + ]</div>
           <p><strong>Drop a file here</strong> or click to choose</p>
           <p class="muted small" id="upload-limit">JPEG, PNG, WebP, GIF, TIFF, HEIC, PDF — up to 30 MB</p>
           <p class="file-name" id="file-name"></p>
