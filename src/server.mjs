@@ -33,6 +33,7 @@ import { scanEmail } from './email.mjs';
 import { analyzeFile, stripMetadata } from './exif.mjs';
 import { deleteAllData, deleteReport, listReports, purgeReports, readReport, readReportHtml, reportStats, saveReport } from './report.mjs';
 import { CATEGORY_LABELS } from './sites.mjs';
+import { findContradictions } from './case-intel.mjs';
 import { normalizeUsername, scanUsername } from './username.mjs';
 import { TOOL, VERSION } from './util.mjs';
 import { correlateCaseReports } from './correlate.mjs';
@@ -382,7 +383,12 @@ export function createAppServer(config = loadConfig()) {
         let result;
         try {
           const correlations = correlateCaseReports(reports);
-          result = await requestCaseAnalysis({ caseData: { ...record, correlations }, reports, config });
+          const deterministicContradictions = findContradictions(reports);
+          result = await requestCaseAnalysis({
+            caseData: { ...record, correlations, deterministicContradictions },
+            reports,
+            config,
+          });
         } catch (err) {
           appendAudit(
             {

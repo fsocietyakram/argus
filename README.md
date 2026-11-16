@@ -501,7 +501,8 @@ are exposed.
 2. Attach saved report IDs. Reports can be removed again without deleting the underlying report.
 3. Press **Analyze case** and confirm the provider/model and host shown in the dialog.
 4. ARGUS builds a minimised evidence payload containing only the selected reports and the case
-   notes. It sends one `POST` to the configured chat-completions endpoint.
+   notes, plus bounded cross-report matches and deterministic contradiction checks derived from
+   those reports. It sends one `POST` to the configured chat-completions endpoint.
 5. The result is validated and shown as a preview. Nothing is saved automatically.
 6. Review the structured sections, then **Save analysis to case**, **Discard preview**, or
    **Run again**. Provider failures keep the case, notes, and report attachments intact and
@@ -509,8 +510,10 @@ are exposed.
 
 Case views also show a deterministic timeline and exact indicators repeated across attached
 reports (for example, a domain found in DNS and a file URL). Each occurrence cites the report id
-and JSON field it came from. These are review leads; a repeated value does not establish common
-ownership or identity.
+and JSON field it came from. Cross-tool overlaps include a relationship pattern and separate
+match and attribution confidence labels. These are review leads; a repeated value does not
+establish common ownership or identity. Confidence labels are triage heuristics, not calibrated
+probabilities or proof of wrongdoing.
 
 Case data is stored under `data/cases/` as `argus.case/v1` JSON. Each case keeps at most 50
 reports and 20 reviewed analyses. Analyses are stored as `argus.analysis/v1` records. Prompts
