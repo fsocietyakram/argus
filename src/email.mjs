@@ -22,6 +22,14 @@ export const ROLE_ACCOUNTS = new Set(
   ),
 );
 
+export function isDisposableDomain(domain) {
+  const labels = String(domain || '').toLowerCase().replace(/\.$/, '').split('.');
+  for (let index = 0; index < labels.length; index++) {
+    if (DISPOSABLE_DOMAINS.has(labels.slice(index).join('.'))) return true;
+  }
+  return false;
+}
+
 export function gravatarHash(email) {
   return md5(String(email).trim().toLowerCase());
 }
@@ -84,6 +92,7 @@ function parseTagString(record) {
 }
 
 const asStrings = (records) => (records || []).map((chunks) => chunks.join(''));
+const lookupCompleted = (result) => !result.error || /\b(?:ENODATA|ENOTFOUND|NXDOMAIN)\b/i.test(result.error);
 
 /**
  * DNS / email-authentication intelligence for a domain.
@@ -148,8 +157,9 @@ export async function dnsIntel(domain, options = {}) {
     ns: ns.value || [],
     soa: soa.value || null,
     txt,
-    spf: { present: Boolean(spfRecord), record: spfRecord, valid: Boolean(spfRecord && /[-~+?]all\b/i.test(spfRecord)) },
+    spf: { checked: lookupCompleted(txtRecords), present: Boolean(spfRecord), record: spfRecord, valid: Boolean(spfRecord && /[-~+?]all\b/i.test(spfRecord)) },
     dmarc: {
+      checked: lookupCompleted(dmarcQuery),
       present: Boolean(dmarcRecord),
       record: dmarcRecord,
       tags: dmarcTags,
@@ -325,8 +335,9 @@ function riskFor({ syntax, dns, gravatar, breaches }) {
   };
 
   if (!syntax.valid) add(100, `Email syntax is invalid: ${syntax.reason}`);
-  if (syntax.valid && !dns.hasMx && !dns.implicitMx) add(40, 'Domain has no MX records, so it likely cannot receive email.');
-  if (syntax.valid && DISPOSABLE_DOMAINS.has(syntax.domain)) add(30, 'Domain is a known disposable-email provider.');
+  const transientDnsFailure = (dns.errors || []).some((error) => !/\b(?:ENODATA|ENOTFOUND|NXDOMAIN)\b/i.test(error));
+  if (syntax.valid && !transientDnsFailure && !dns.hasMx && !dns.implicitMx) add(40, 'DNS returned no usable MX or implicit mail host.');
+  if (syntax.valid && isDisposableDomain(syntax.domain)) add(30, 'Domain is a known disposable-email provider or subdomain.');
   if (syntax.valid && ROLE_ACCOUNTS.has(String(syntax.local || '').toLowerCase().split(/[+.]/)[0])) {
     add(10, 'Local part looks like a shared role account.');
   }
@@ -334,8 +345,8 @@ function riskFor({ syntax, dns, gravatar, breaches }) {
     add(Math.min(30, breaches.breaches.length * 10), `Address appears in ${breaches.breaches.length} public breach record(s).`);
   }
   if (gravatar.found) add(5, 'A public Gravatar profile is linked to this address.');
-  if (!dns.spf?.present) add(5, 'Domain publishes no SPF record.');
-  if (!dns.dmarc?.present) add(10, 'Domain publishes no DMARC record.');
+  if (dns.spf?.checked && !dns.spf.present) add(5, 'Domain publishes no SPF record.');
+  if (dns.dmarc?.checked && !dns.dmarc.present) add(10, 'Domain publishes no DMARC record.');
 
   score = Math.min(100, score);
   const level = score >= 60 ? 'high' : score >= 30 ? 'medium' : score > 0 ? 'low' : 'none';

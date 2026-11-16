@@ -7,6 +7,8 @@ import { md5, sha1, sha256, uniq, formatBytes, truncate } from './util.mjs';
 /* ------------------------------------------------------------------ */
 
 const TYPE_SIZES = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4 };
+const MAX_METADATA_INFLATE_BYTES = 8 * 1024 * 1024;
+const inflateMetadata = (buffer) => inflateSync(buffer, { maxOutputLength: MAX_METADATA_INFLATE_BYTES });
 
 const ORIENTATION = {
   1: 'Normal',
@@ -712,7 +714,7 @@ function parsePng(buf) {
         const transEnd = data.indexOf(0, langEnd + 1);
         const text = data.subarray(transEnd + 1);
         try {
-          const value = (compressed ? inflateSync(text) : text).toString('utf8').trim();
+          const value = (compressed ? inflateMetadata(text) : text).toString('utf8').trim();
           result.text.push({ key, value, source: 'PNG iTXt' });
         } catch {
           result.warnings.push(`Could not decompress PNG iTXt "${key}".`);
@@ -723,7 +725,7 @@ function parsePng(buf) {
       if (nul > 0) {
         const key = data.subarray(0, nul).toString('latin1');
         try {
-          const value = inflateSync(data.subarray(nul + 2)).toString('latin1').trim();
+          const value = inflateMetadata(data.subarray(nul + 2)).toString('latin1').trim();
           result.text.push({ key, value, source: 'PNG zTXt' });
         } catch {
           result.warnings.push(`Could not decompress PNG zTXt "${key}".`);

@@ -678,6 +678,13 @@ a.chip:hover { border-color: var(--accent); }
 }
 .app-footer p { max-width: 900px; margin: 0 auto; }
 
+.case-correlations { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(11, 18, 32, .45); }
+.case-correlations h3, .case-correlations h4 { color: var(--accent); margin: 4px 0 8px; }
+.correlation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.correlation-grid article { padding: 10px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.correlation-grid ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.case-correlations ol { padding-left: 22px; }
+
 @media (max-width: 680px) {
   main { padding: 16px; }
   .app-header { padding: 18px; }
@@ -687,6 +694,7 @@ a.chip:hover { border-color: var(--accent); }
   .input-row input { flex-basis: 100%; padding: 10px; }
   .input-row button { width: 100%; }
   .grid { grid-template-columns: 1fr; }
+  .correlation-grid { grid-template-columns: 1fr; }
   .source-row { grid-template-columns: 22px 1fr; }
   .source-meta { grid-column: 2; text-align: left; }
 }

@@ -39,7 +39,7 @@ export function normalizeUsername(input) {
     }
   }
 
-  value = value.replace(/^@+/, '').trim();
+  value = value.replace(/^@/, '').trim();
 
   if (/\s/.test(value)) throw new Error('Username must not contain spaces.');
   if (/[/?#\\]/.test(value)) throw new Error('Username contains characters that are not allowed.');
@@ -123,9 +123,9 @@ export function evaluateResponse(source, res) {
 
   if (code === 200 && source.check === 'status') {
     return {
-      status: source.confidence === 'high' ? 'confirmed' : 'possible',
-      confidence: source.confidence || 'medium',
-      detail: `HTTP ${code}: page exists.`,
+      status: 'unverified',
+      confidence: 'low',
+      detail: 'HTTP 200 only proves the route responded; this source supplied no profile-specific match marker.',
     };
   }
 

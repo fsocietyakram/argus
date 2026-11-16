@@ -297,8 +297,8 @@ export async function scanDomain(input, options = {}) {
     const daysLeft = Math.floor((new Date(whois.parsed.expiryDate).getTime() - Date.now()) / 86_400_000);
     if (daysLeft <= 30) add(15, `Domain expires in ${daysLeft} day(s).`);
   }
-  if (!dns.spf?.present) add(5, 'No SPF record published.');
-  if (!dns.dmarc?.present) add(10, 'No DMARC record published.');
+  if (dns.spf?.checked && !dns.spf.present) add(5, 'No SPF record published.');
+  if (dns.dmarc?.checked && !dns.dmarc.present) add(10, 'No DMARC record published.');
   if (!http.error && !http.security?.strictTransportSecurity) add(10, 'No HSTS header on the home page.');
   if (!http.error && !http.security?.contentSecurityPolicy) add(5, 'No Content-Security-Policy header on the home page.');
   if (whois.parsed?.dnssec && /unsigned/i.test(whois.parsed.dnssec)) add(5, 'DNSSEC is not enabled.');

@@ -1551,6 +1551,16 @@ function renderCase() {
         .join('')}</tbody></table>`;
   }
 
+  const correlations = record.correlations || {};
+  const repeated = correlations.repeatedIndicators || [];
+  const timeline = correlations.timeline || [];
+  reportsHost.insertAdjacentHTML('beforeend', `<section class="case-correlations">
+    <h3>Cross-report intelligence</h3>
+    <p class="muted small">${repeated.length} exact repeated indicator(s). Matches are review leads, not proof of common ownership.</p>
+    ${repeated.length ? `<div class="correlation-grid">${repeated.map((item) => `<article><strong>${esc(item.type)} · ${esc(item.value)}</strong><ul>${item.occurrences.map((entry) => `<li><span class="mono">${esc(entry.reportId)}</span> — ${esc(entry.evidence)}</li>`).join('')}</ul></article>`).join('')}</div>` : '<p class="muted small">No exact shared indicators found in readable attached reports.</p>'}
+    <h4>Evidence timeline</h4><ol>${timeline.map((entry) => `<li>${esc(fmtDate(entry.createdAt))} · ${esc(COMMAND_LABELS[entry.command] || entry.command || 'Report')} · ${esc(entry.target || '')} <span class="mono">${esc(entry.reportId)}</span></li>`).join('') || '<li class="muted">No readable reports.</li>'}</ol>
+  </section>`);
+
   $$('button[data-remove-report]', reportsHost).forEach((button) => {
     button.addEventListener('click', () => removeCaseReport(button.dataset.removeReport));
   });

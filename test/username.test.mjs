@@ -175,9 +175,9 @@ test('scanUsername records confirmed, possible, absent, blocked, skipped, and er
   assert.equal(result.normalized, 'example');
   assert.equal(result.target, '@example');
   assert.equal(result.summary.total, sources.length);
-  assert.equal(result.summary.confirmed, 3);
+  assert.equal(result.summary.confirmed, 2);
   assert.equal(result.summary.possible, 1);
-  assert.equal(result.summary.unverified, 1);
+  assert.equal(result.summary.unverified, 3);
   assert.equal(result.summary.absent, 2);
   assert.equal(result.summary.blocked, 1);
   assert.equal(result.summary.skipped, 1);
@@ -186,7 +186,7 @@ test('scanUsername records confirmed, possible, absent, blocked, skipped, and er
   assert.ok(events.some((event) => event.phase === 'result'));
 
   const byId = Object.fromEntries(result.findings.map((finding) => [finding.id, finding]));
-  assert.equal(byId['ok-status'].status, 'confirmed');
+  assert.equal(byId['ok-status'].status, 'unverified');
   assert.equal(byId['marker-high'].status, 'confirmed');
   assert.equal(byId['marker-medium'].status, 'possible');
   assert.equal(byId.ambiguity.status, 'unverified');
@@ -197,7 +197,7 @@ test('scanUsername records confirmed, possible, absent, blocked, skipped, and er
   assert.equal(byId.refused.status, 'error');
   assert.equal(byId['robots-private'].status, 'skipped');
   assert.match(byId['robots-private'].detail, /robots\.txt/i);
-  assert.equal(byId['robots-public'].status, 'confirmed');
+  assert.equal(byId['robots-public'].status, 'unverified');
 
   assert.ok(result.notes.some((note) => /not proof/i.test(note) || /not evidence/i.test(note)));
 });

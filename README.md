@@ -48,7 +48,7 @@ they are no longer needed.
 
 | Area | What ARGUS does |
 | --- | --- |
-| **Username search** | Checks 53 public profile sources, grouped into social, developer, creative, music, gaming, books, film, and other. Results are labelled `confirmed`, `possible`, `unverified`, `absent`, `blocked`, `skipped`, or `error`. |
+| **Username search** | Checks 54 public profile sources, grouped into social, developer, creative, music, gaming, books, film, and other. Results are labelled `confirmed`, `possible`, `unverified`, `absent`, `blocked`, `skipped`, or `error`. |
 | **Email checks** | Syntax validation, MX/A/AAAA/NS/SOA records, SPF, DMARC, common DKIM selectors, Gravatar public profile, optional Have I Been Pwned breach metadata (no credentials), and public GitHub mentions. Optional linked username scan derived from the local part. |
 | **Domain reconnaissance** | WHOIS over port 43, DNS records, certificate-transparency subdomains (crt.sh), HTTP headers/redirects, and email-authentication posture. |
 | **File metadata** | Parses EXIF/TIFF (including GPS, camera, serial numbers, timestamps), PNG text chunks, PDF/GIF/HEIC labels, embedded strings, hashes, and an exposure score. |
@@ -315,12 +315,12 @@ The registry lives in [`src/sites.mjs`](src/sites.mjs). Every entry declares its
 hit detection, confidence, rate limit, robots.txt policy, and a terms-of-use note. Sources can
 be enabled or disabled in `argus.config.json` or from the web UI.
 
-Current categories (53 sources):
+Current categories (54 sources):
 
 | Category | Sources |
 | --- | --- |
 | `social` | Instagram, X (Twitter), Reddit, TikTok, YouTube, Threads, Pinterest, Tumblr, VK, About.me, Facebook, Mastodon, Bluesky |
-| `dev` | GitHub, GitLab, Codeberg, Bitbucket, SourceForge, Keybase, Hacker News, Stack Overflow, npm, PyPI, Docker Hub, Hugging Face, CodePen, Pastebin, LeetCode, Codeforces, TryHackMe, Replit |
+| `dev` | GitHub, GitLab, Codeberg, Bitbucket, SourceForge, Keybase, Hacker News, Stack Overflow, npm, PyPI, Docker Hub, Hugging Face, CodePen, Pastebin, LeetCode, Codeforces, Codewars, TryHackMe, Replit |
 | `creative` | Behance, Dribbble, DeviantArt, Flickr, Vimeo, Medium, Substack, WordPress.com, Blogger |
 | `music` | Bandcamp, SoundCloud, Mixcloud, Spotify, Last.fm |
 | `gaming` | Steam, Twitch, Chess.com, Lichess |
@@ -336,9 +336,9 @@ Run `node argus.mjs sites` to see current state.
 
 | Status | Meaning |
 | --- | --- |
-| `confirmed` | HTTP 200 or an explicit positive marker on a source rated high confidence. |
+| `confirmed` | A profile-specific positive marker or successful exact public API lookup. |
 | `possible` | A positive marker on a medium/low-confidence source. |
-| `unverified` | The page loaded but did not clearly confirm or deny the account, or contained both positive and not-found markers. |
+| `unverified` | The page loaded but supplied no profile-specific evidence, or contained conflicting markers. |
 | `absent` | A clear 404/410 or a specific not-found marker. |
 | `blocked` | 401/403/429, an anti-bot challenge page, or another access denial. Not evidence of absence. |
 | `skipped` | Deliberately not fetched, e.g. `robots.txt` disallows the path. |
@@ -484,6 +484,10 @@ are exposed.
 6. Review the structured sections, then **Save analysis to case**, **Discard preview**, or
    **Run again**. Provider failures keep the case, notes, and report attachments intact and
    show a retry button.
+
+Case views also show a deterministic timeline and exact indicators repeated across attached
+reports (for example, a domain found in DNS and a file URL). These are review leads with links
+back to their source reports; a repeated value does not establish common ownership or identity.
 
 Case data is stored under `data/cases/` as `argus.case/v1` JSON. Each case keeps at most 50
 reports and 20 reviewed analyses. Analyses are stored as `argus.analysis/v1` records. Prompts

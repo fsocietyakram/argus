@@ -280,4 +280,53 @@ async function dockerhub({ username, timeout }) {
   };
 }
 
-export const PROBES = { steam, mastodon, bluesky, stackoverflow, dockerhub };
+async function codewars({ username, timeout }) {
+  const res = await fetchLimited(`https://www.codewars.com/api/v1/users/${encodeURIComponent(username)}`, {
+    timeout, maxBytes: 200_000, headers: { accept: 'application/json' },
+  });
+  if (res.error) return { status: 'error', detail: `Request failed: ${res.error}` };
+  if (res.status === 404) return { status: 'absent', detail: 'No Codewars user with this username.' };
+  if ([401, 403, 429].includes(res.status)) return { status: 'blocked', detail: `HTTP ${res.status}` };
+  const data = parseJson(res.text);
+  if (res.status !== 200 || !data?.username) return { status: 'error', detail: `Unexpected Codewars API response (HTTP ${res.status}).` };
+  return {
+    status: 'confirmed', confidence: 'high', detail: 'Public Codewars user API',
+    profile: {
+      fields: [
+        { label: 'Username', value: data.username }, { label: 'Display name', value: data.name },
+        { label: 'Honor', value: String(data.honor ?? '') }, { label: 'Clan', value: data.clan },
+        { label: 'Overall rank', value: data.ranks?.overall?.name },
+        { label: 'Completed challenges', value: String(data.codeChallenges?.totalCompleted ?? '') },
+        { label: 'Skills', value: Array.isArray(data.skills) ? data.skills.join(', ') : '' },
+      ].filter((field) => field.value),
+      links: [{ label: 'Codewars profile', url: data.url || `https://www.codewars.com/users/${encodeURIComponent(username)}` }],
+    },
+  };
+}
+
+async function huggingface({ username, timeout }) {
+  const res = await fetchLimited(`https://huggingface.co/api/users/${encodeURIComponent(username)}/overview`, {
+    timeout, maxBytes: 200_000, headers: { accept: 'application/json' },
+  });
+  if (res.error) return { status: 'error', detail: `Request failed: ${res.error}` };
+  if (res.status === 404) return { status: 'absent', detail: 'No public Hugging Face user overview.' };
+  if ([401, 403, 429].includes(res.status)) return { status: 'blocked', detail: `HTTP ${res.status}` };
+  const data = parseJson(res.text);
+  const user = data?.user || data;
+  const handle = user?.username || user?.name;
+  if (res.status !== 200 || !handle) return { status: 'error', detail: `Unexpected Hugging Face API response (HTTP ${res.status}).` };
+  return {
+    status: 'confirmed', confidence: 'high', detail: 'Public Hugging Face Hub user overview API',
+    profile: {
+      fields: [
+        { label: 'Username', value: handle }, { label: 'Full name', value: user.fullname || user.fullName },
+        { label: 'Bio', value: user.bio }, { label: 'Followers', value: String(data.numFollowers ?? user.numFollowers ?? '') },
+        { label: 'Public models', value: String(data.numModels ?? user.numModels ?? '') },
+        { label: 'Public datasets', value: String(data.numDatasets ?? user.numDatasets ?? '') },
+      ].filter((field) => field.value),
+      links: [{ label: 'Hugging Face profile', url: `https://huggingface.co/${encodeURIComponent(handle)}` }],
+    },
+  };
+}
+
+export const PROBES = { steam, mastodon, bluesky, stackoverflow, dockerhub, codewars, huggingface };

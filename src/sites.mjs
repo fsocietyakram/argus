@@ -152,8 +152,10 @@ export const SOURCES = [
     confidence: 'high',
     tos: 'Docker Hub public user API. Read-only.',
   }),
-  page('huggingface', 'Hugging Face', 'dev', 'https://huggingface.co/{u}', {
+  api('huggingface', 'Hugging Face', 'dev', 'https://huggingface.co/{u}', 'huggingface', {
     confidence: 'high',
+    rateLimit: 30,
+    tos: 'Public Hugging Face Hub user overview API. Read-only; no authentication.',
   }),
   page('codepen', 'CodePen', 'dev', 'https://codepen.io/{u}', {
     confidence: 'high',
@@ -170,6 +172,11 @@ export const SOURCES = [
     check: 'marker',
     confidence: 'medium',
     notFound: ['user not found'],
+  }),
+  api('codewars', 'Codewars', 'dev', 'https://www.codewars.com/api/v1/users/{u}', 'codewars', {
+    confidence: 'high',
+    rateLimit: 30,
+    tos: 'Public Codewars API v1 user endpoint. Read-only; no authentication.',
   }),
   page('tryhackme', 'TryHackMe', 'dev', 'https://tryhackme.com/p/{u}', {
     check: 'marker',

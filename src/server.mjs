@@ -32,6 +32,7 @@ import { deleteAllData, deleteReport, listReports, purgeReports, readReport, rea
 import { CATEGORY_LABELS } from './sites.mjs';
 import { normalizeUsername, scanUsername } from './username.mjs';
 import { TOOL, VERSION } from './util.mjs';
+import { correlateCaseReports } from './correlate.mjs';
 
 const PUBLIC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MAX_JSON = 1_000_000;
@@ -361,7 +362,8 @@ export function createAppServer(config = loadConfig()) {
 
         let result;
         try {
-          result = await requestCaseAnalysis({ caseData: record, reports, config });
+          const correlations = correlateCaseReports(reports);
+          result = await requestCaseAnalysis({ caseData: { ...record, correlations }, reports, config });
         } catch (err) {
           appendAudit(
             {
@@ -506,7 +508,11 @@ export function createAppServer(config = loadConfig()) {
         const id = caseMatch[1];
         if (method === 'GET') {
           const record = readCase(id, config);
-          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+          const reports = record.reportIds.flatMap((reportId) => {
+            try { return [{ id: reportId, report: readReport(reportId, config) }]; }
+            catch { return []; }
+          });
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config), correlations: correlateCaseReports(reports) } });
         }
         if (method === 'PATCH' || method === 'PUT') {
           const body = await readJson(req, 32_000);
