@@ -25,6 +25,8 @@
     <button class="tab" data-tab="email">Email checks</button>
     <button class="tab" data-tab="file">File metadata</button>
     <button class="tab" data-tab="reports">Reports</button>
+    <button class="tab" data-tab="cases">Cases</button>
+    <button class="tab" data-tab="ai-settings">AI settings</button>
   </nav>
 
   <main>
@@ -181,6 +183,176 @@
         <p class="muted small">Targets can be redacted in <code>argus.config.json</code> by setting <code>logTargetsInAudit</code> to <code>false</code>.</p>
         <div id="audit-table"></div>
       </div>
+    </section>
+
+    <!-- ----------------------------- Cases ---------------------------- -->
+    <section id="tab-cases" class="tab-panel">
+      <div class="panel hero-panel">
+        <h1>Case workspace</h1>
+        <p class="muted">
+          Group saved reports into a case and ask your configured OpenAI-compatible provider for a
+          structured analysis. Only the reports attached to the selected case and its notes are sent,
+          and only when you press <strong>Analyze case</strong>. Every AI claim must cite a saved
+          report ID and field; unsupported claims are flagged. AI output is a lead, not evidence.
+        </p>
+        <p class="muted small">
+          Nothing is ever sent to people, accounts, websites, or third-party services based on AI
+          suggestions. Cases are stored locally under <code>data/cases/</code>.
+        </p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Cases</h2>
+          <div class="actions-row">
+            <button type="button" class="secondary" id="cases-refresh">Refresh</button>
+            <button type="button" class="primary" id="case-new">New case</button>
+          </div>
+        </div>
+        <div id="case-list"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div class="panel hidden" id="case-editor">
+        <div class="panel-head">
+          <h2 id="case-editor-title">Case</h2>
+          <div class="actions-row">
+            <button type="button" class="danger" id="case-delete">Delete case</button>
+          </div>
+        </div>
+
+        <form id="case-form" novalidate>
+          <label class="field-label" for="case-title">Title</label>
+          <div class="input-row">
+            <input id="case-title" name="title" maxlength="200" placeholder="Case title" required>
+          </div>
+          <label class="field-label" for="case-notes">Notes <span class="muted small">(sent to the provider with the attached evidence)</span></label>
+          <textarea id="case-notes" name="notes" rows="5" maxlength="10000" placeholder="What are you trying to establish? Known context, scope, and constraints."></textarea>
+          <div class="actions-row">
+            <button type="submit" class="secondary" id="case-save">Save title &amp; notes</button>
+            <span class="muted small" id="case-meta"></span>
+          </div>
+        </form>
+
+        <div class="case-section">
+          <div class="panel-head">
+            <h3>Attached reports <span class="muted small" id="case-report-count"></span></h3>
+          </div>
+          <div id="case-reports"><p class="muted small">No reports attached.</p></div>
+          <div class="case-attach-row">
+            <label class="field-label" for="case-report-select">Attach a saved report</label>
+            <div class="input-row">
+              <select id="case-report-select">
+                <option value="">Choose a saved report…</option>
+              </select>
+              <button type="button" class="secondary" id="case-attach">Attach</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="case-section">
+          <div class="panel-head">
+            <h3>AI analysis</h3>
+            <div class="actions-row">
+              <button type="button" class="primary" id="case-analyze">Analyze case</button>
+            </div>
+          </div>
+          <p class="muted small">
+            Review the result before saving. The provider receives the selected report data and case notes only.
+            No request is made until you press Analyze case.
+          </p>
+          <div id="case-analyze-status" class="muted small"></div>
+          <div id="case-preview"></div>
+          <div id="case-analyses"></div>
+        </div>
+      </div>
+
+      <div class="panel hidden" id="case-create-panel">
+        <div class="panel-head"><h2>New case</h2></div>
+        <form id="case-create-form" novalidate>
+          <label class="field-label" for="case-create-title">Title</label>
+          <div class="input-row">
+            <input id="case-create-title" maxlength="200" placeholder="Case title" required>
+          </div>
+          <label class="field-label" for="case-create-notes">Notes</label>
+          <textarea id="case-create-notes" rows="4" maxlength="10000" placeholder="Optional context and goals."></textarea>
+          <div class="actions-row">
+            <button type="submit" class="primary" id="case-create-submit">Create case</button>
+            <button type="button" class="secondary" id="case-create-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- -------------------------- AI settings ------------------------- -->
+    <section id="tab-ai-settings" class="tab-panel">
+      <div class="panel hero-panel">
+        <h1>AI provider settings</h1>
+        <p class="muted">
+          ARGUS can send selected case evidence to an OpenAI-compatible chat-completions endpoint.
+          The feature stays optional and idle until you start an analysis. The API key is stored on the
+          server only and is never returned to this page.
+        </p>
+        <div class="stats-row">
+          <span class="stat" id="ai-key-status">Key: checking…</span>
+          <span class="stat" id="ai-key-source">Source: —</span>
+        </div>
+      </div>
+
+      <form id="ai-form" class="panel" novalidate>
+        <div class="ai-grid">
+          <div>
+            <label class="field-label" for="ai-base-url">Base URL</label>
+            <div class="input-row">
+              <input id="ai-base-url" type="url" placeholder="https://api.openai.com/v1" spellcheck="false">
+            </div>
+            <p class="muted small">The provider endpoint is <code>&lt;base URL&gt;/chat/completions</code>. Usually ends with <code>/v1</code>.</p>
+          </div>
+          <div>
+            <label class="field-label" for="ai-model">Model</label>
+            <div class="input-row">
+              <input id="ai-model" placeholder="gpt-4o-mini" spellcheck="false">
+            </div>
+            <p class="muted small">Any model your provider exposes for chat completions.</p>
+          </div>
+          <div>
+            <label class="field-label" for="ai-api-key">API key</label>
+            <div class="input-row">
+              <input id="ai-api-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved key" spellcheck="false">
+            </div>
+            <p class="muted small">Environment variables <code>ARGUS_AI_API_KEY</code> and <code>OPENAI_API_KEY</code> take precedence over the local secrets file.</p>
+          </div>
+          <div>
+            <label class="field-label" for="ai-timeout">Timeout (ms)</label>
+            <div class="input-row">
+              <input id="ai-timeout" type="number" min="1000" max="120000" step="1000">
+            </div>
+            <p class="muted small">1,000–120,000 ms. Applies to each analysis request.</p>
+          </div>
+          <div>
+            <label class="field-label" for="ai-max-tokens">Max output tokens</label>
+            <div class="input-row">
+              <input id="ai-max-tokens" type="number" min="256" max="8192" step="1">
+            </div>
+          </div>
+          <div>
+            <label class="field-label" for="ai-max-input">Max input characters</label>
+            <div class="input-row">
+              <input id="ai-max-input" type="number" min="2000" max="200000" step="1000">
+            </div>
+            <p class="muted small">Evidence above this limit is truncated and omitted report IDs are reported.</p>
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button type="submit" class="primary" id="ai-save">Save settings</button>
+          <button type="button" class="secondary" id="ai-clear-key">Clear saved key</button>
+          <button type="button" class="secondary" id="ai-reload">Reload</button>
+        </div>
+        <p class="muted small">
+          Privacy: the key is never written to reports or the audit log and never sent to the browser.
+          Prompts contain the selected case notes and report evidence only. Full provider responses are not logged.
+        </p>
+      </form>
     </section>
   </main>
 

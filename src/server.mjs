@@ -3,7 +3,21 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AiError, aiSettingsView, currentAiSettings, requestCaseAnalysis, updateAiSettings } from './ai.mjs';
 import { appendAudit, clearAudit, readAudit } from './audit.mjs';
+import {
+  CaseError,
+  addAnalysis,
+  attachReports,
+  caseStats,
+  createCase,
+  deleteAnalysis,
+  deleteCase,
+  listCases,
+  readCase,
+  removeReport,
+  updateCase,
+} from './cases.mjs';
 import {
   createDataDirs,
   loadConfig,
@@ -33,6 +47,45 @@ const MIME = {
 };
 
 const jobs = new Map();
+const aiPreviews = new Map();
+const AI_PREVIEW_TTL_MS = 30 * 60 * 1000;
+
+function pruneAiPreviews() {
+  const now = Date.now();
+  for (const [id, preview] of aiPreviews) {
+    if (new Date(preview.expiresAt).getTime() <= now) aiPreviews.delete(id);
+  }
+  while (aiPreviews.size > 20) {
+    aiPreviews.delete(aiPreviews.keys().next().value);
+  }
+}
+
+function providerHost(baseUrl) {
+  try {
+    return new URL(baseUrl).host || null;
+  } catch {
+    return null;
+  }
+}
+
+function caseReportView(record, config) {
+  return record.reportIds.map((id) => {
+    try {
+      const report = readReport(id, config);
+      return {
+        id,
+        command: report.command,
+        target: report.target,
+        createdAt: report.createdAt,
+        riskScore: report.risk?.score ?? null,
+        riskLevel: report.risk?.level ?? null,
+        missing: false,
+      };
+    } catch {
+      return { id, missing: true };
+    }
+  });
+}
 
 function json(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload, null, 2);
@@ -168,7 +221,7 @@ export function createAppServer(config = loadConfig()) {
     console.warn(`[argus] Report retention cleanup failed: ${err.message}`);
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const started = Date.now();
 
     res.on('finish', () => {
@@ -209,6 +262,7 @@ export function createAppServer(config = loadConfig()) {
           version: VERSION,
           time: new Date().toISOString(),
           hibpConfigured: Boolean(process.env[config.settings?.hibpApiKeyEnv || 'HIBP_API_KEY']),
+          aiConfigured: aiSettingsView(config).keyConfigured,
         });
       }
 
@@ -233,10 +287,238 @@ export function createAppServer(config = loadConfig()) {
             logTargetsInAudit: config.settings.logTargetsInAudit,
           },
           hibpConfigured: Boolean(process.env[config.settings?.hibpApiKeyEnv || 'HIBP_API_KEY']),
+          ai: aiSettingsView(config),
           categories,
           sources: sources.map(summariseSource),
           stats: reportStats(config),
         });
+      }
+
+      /* ------------------------------ AI ------------------------------- */
+
+      if (path === '/api/ai/settings' && method === 'GET') {
+        return json(res, 200, { settings: aiSettingsView(config) });
+      }
+
+      if (path === '/api/ai/settings' && method === 'PUT') {
+        const body = await readJson(req, 16_000);
+        const result = updateAiSettings(body, config);
+        appendAudit(
+          {
+            action: 'ai.settings_updated',
+            details: {
+              baseUrl: result.settings.baseUrl,
+              model: result.settings.model,
+              keyUpdated: result.keyUpdated,
+              keyConfigured: result.settings.keyConfigured,
+              keySource: result.settings.keySource,
+            },
+          },
+          config,
+        );
+        return json(res, 200, result);
+      }
+
+      /* ----------------------------- Cases ----------------------------- */
+
+      if (path === '/api/cases' && method === 'GET') {
+        return json(res, 200, { stats: caseStats(config), cases: listCases(config) });
+      }
+
+      if (path === '/api/cases' && method === 'POST') {
+        const body = await readJson(req, 32_000);
+        const record = createCase(body, config);
+        appendAudit({ action: 'case.created', details: { caseId: record.id } }, config);
+        return json(res, 201, { case: { ...record, reports: [] } });
+      }
+
+      const caseAnalyzeMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)\/analyze$/);
+      if (caseAnalyzeMatch && method === 'POST') {
+        const id = caseAnalyzeMatch[1];
+        const record = readCase(id, config);
+        if (!record.reportIds.length) {
+          throw new CaseError('Attach at least one saved report before analyzing this case.', {
+            code: 'no_reports',
+            status: 400,
+          });
+        }
+
+        const reports = [];
+        const missing = [];
+        for (const reportId of record.reportIds) {
+          try {
+            reports.push({ id: reportId, report: readReport(reportId, config) });
+          } catch {
+            missing.push(reportId);
+          }
+        }
+        if (missing.length) {
+          throw new CaseError(
+            `Some attached reports no longer exist: ${missing.join(', ')}. Remove them from the case and try again.`,
+            { code: 'missing_reports', status: 409, missing },
+          );
+        }
+
+        let result;
+        try {
+          result = await requestCaseAnalysis({ caseData: record, reports, config });
+        } catch (err) {
+          appendAudit(
+            {
+              action: 'case.analysis_failed',
+              details: { caseId: id, code: err.code || 'ai_error' },
+            },
+            config,
+          );
+          throw err;
+        }
+
+        pruneAiPreviews();
+        const previewId = randomBytes(8).toString('hex');
+        const createdAt = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + AI_PREVIEW_TTL_MS).toISOString();
+        aiPreviews.set(previewId, {
+          caseId: id,
+          createdAt,
+          expiresAt,
+          analysis: result.analysis,
+          model: result.model,
+          usage: result.usage,
+          evidence: result.evidence,
+          providerHost: providerHost(currentAiSettings(config).baseUrl),
+        });
+
+        appendAudit(
+          {
+            action: 'case.analysis_completed',
+            details: {
+              caseId: id,
+              model: result.model,
+              reportCount: result.evidence.reportIds.length,
+              omittedReportCount: result.evidence.omittedReportIds.length,
+              inputChars: result.evidence.inputChars,
+            },
+          },
+          config,
+        );
+
+        return json(res, 200, {
+          previewId,
+          createdAt,
+          expiresAt,
+          analysis: result.analysis,
+          model: result.model,
+          usage: result.usage,
+          evidence: result.evidence,
+        });
+      }
+
+      const caseAnalysesMatch = path.match(
+        /^\/api\/cases\/([A-Za-z0-9._-]+)\/analyses(?:\/([A-Za-z0-9._-]+))?$/,
+      );
+      if (caseAnalysesMatch) {
+        const [, id, analysisId] = caseAnalysesMatch;
+        if (method === 'POST' && !analysisId) {
+          const body = await readJson(req, 4_000);
+          const previewId = typeof body.previewId === 'string' ? body.previewId : '';
+          pruneAiPreviews();
+          const preview = aiPreviews.get(previewId);
+          if (!preview || preview.caseId !== id) {
+            throw new AiError('Analysis preview not found or expired. Run Analyze again before saving.', {
+              code: 'preview_expired',
+              status: 404,
+            });
+          }
+          if (new Date(preview.expiresAt).getTime() <= Date.now()) {
+            aiPreviews.delete(previewId);
+            throw new AiError('Analysis preview expired. Run Analyze again.', {
+              code: 'preview_expired',
+              status: 404,
+            });
+          }
+          const saved = addAnalysis(
+            id,
+            {
+              analysis: preview.analysis,
+              model: preview.model,
+              usage: preview.usage,
+              evidence: preview.evidence,
+              providerHost: preview.providerHost,
+            },
+            config,
+          );
+          aiPreviews.delete(previewId);
+          appendAudit(
+            {
+              action: 'case.analysis_saved',
+              details: { caseId: id, analysisId: saved.analysis.id },
+            },
+            config,
+          );
+          return json(res, 201, {
+            case: { ...saved.case, reports: caseReportView(saved.case, config) },
+            analysis: saved.analysis,
+          });
+        }
+
+        if (method === 'DELETE' && analysisId) {
+          const record = deleteAnalysis(id, analysisId, config);
+          appendAudit(
+            { action: 'case.analysis_deleted', details: { caseId: id, analysisId } },
+            config,
+          );
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+        }
+      }
+
+      const caseReportsMatch = path.match(
+        /^\/api\/cases\/([A-Za-z0-9._-]+)\/reports(?:\/([A-Za-z0-9._-]+))?$/,
+      );
+      if (caseReportsMatch) {
+        const [, id, reportId] = caseReportsMatch;
+        if (method === 'POST' && !reportId) {
+          const body = await readJson(req, 32_000);
+          const record = attachReports(id, body.reportIds, config);
+          appendAudit(
+            {
+              action: 'case.reports_attached',
+              details: { caseId: id, reportCount: record.reportIds.length },
+            },
+            config,
+          );
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+        }
+        if (method === 'DELETE' && reportId) {
+          const record = removeReport(id, reportId, config);
+          appendAudit(
+            {
+              action: 'case.report_removed',
+              details: { caseId: id, reportCount: record.reportIds.length },
+            },
+            config,
+          );
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+        }
+      }
+
+      const caseMatch = path.match(/^\/api\/cases\/([A-Za-z0-9._-]+)$/);
+      if (caseMatch) {
+        const id = caseMatch[1];
+        if (method === 'GET') {
+          const record = readCase(id, config);
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+        }
+        if (method === 'PATCH' || method === 'PUT') {
+          const body = await readJson(req, 32_000);
+          const record = updateCase(id, body, config);
+          appendAudit({ action: 'case.updated', details: { caseId: id } }, config);
+          return json(res, 200, { case: { ...record, reports: caseReportView(record, config) } });
+        }
+        if (method === 'DELETE') {
+          deleteCase(id, config);
+          appendAudit({ action: 'case.deleted', details: { caseId: id } }, config);
+          return json(res, 200, { deleted: id });
+        }
       }
 
       if (path === '/api/sources' && method === 'GET') {
@@ -481,7 +763,12 @@ export function createAppServer(config = loadConfig()) {
     } catch (err) {
       const status = err.status || 500;
       if (status >= 500) console.error('[argus]', err);
-      if (!res.headersSent) return json(res, status, { error: err.message || 'Internal error.' });
+      const payload = { error: err.message || 'Internal error.' };
+      if (err.code) payload.code = err.code;
+      if (err.retryable !== undefined) payload.retryable = Boolean(err.retryable);
+      if (err.retryAfter != null) payload.retryAfter = err.retryAfter;
+      if (Array.isArray(err.missing)) payload.missing = err.missing;
+      if (!res.headersSent) return json(res, status, payload);
       try {
         res.end();
       } catch {
@@ -489,6 +776,13 @@ export function createAppServer(config = loadConfig()) {
       }
     }
   });
+
+  // Explicit limits for receiving requests; AI/provider calls have their own timeout.
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 15_000;
+  server.keepAliveTimeout = 5_000;
+
+  return server;
 }
 
 export function startServer({ port, host = '127.0.0.1', open = false, config = loadConfig() } = {}) {

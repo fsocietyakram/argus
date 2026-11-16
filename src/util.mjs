@@ -53,6 +53,7 @@ export async function fetchLimited(url, opts = {}) {
     maxBytes = 200_000,
     headers = {},
     method = 'GET',
+    body,
   } = opts;
 
   const started = Date.now();
@@ -62,6 +63,7 @@ export async function fetchLimited(url, opts = {}) {
   try {
     const res = await fetch(url, {
       method,
+      body,
       redirect: 'follow',
       signal: controller.signal,
       headers: {

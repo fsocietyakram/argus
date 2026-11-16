@@ -16,6 +16,13 @@ export const DEFAULTS = {
     maxUploadMb: 30,
     hibpApiKeyEnv: 'HIBP_API_KEY',
     logTargetsInAudit: true,
+    ai: {
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      timeoutMs: 60000,
+      maxOutputTokens: 1800,
+      maxInputChars: 60000,
+    },
   },
   sources: {},
 };

@@ -34,6 +34,7 @@ they are no longer needed.
 - [Source registry](#source-registry)
 - [Email checks and HIBP](#email-checks-and-hibp)
 - [File metadata](#file-metadata)
+- [AI-assisted case investigation](#ai-assisted-case-investigation)
 - [Reports, audit log, and retention](#reports-audit-log-and-retention)
 - [Configuration](#configuration)
 - [Privacy and security controls](#privacy-and-security-controls)
@@ -53,9 +54,12 @@ they are no longer needed.
 | **File metadata** | Parses EXIF/TIFF (including GPS, camera, serial numbers, timestamps), PNG text chunks, PDF/GIF/HEIC labels, embedded strings, hashes, and an exposure score. |
 | **Metadata stripping** | Writes a metadata-free **copy** of JPEG or PNG files. The original is never modified. |
 | **Reports** | HTML and JSON export with timestamps, links, collection notes, confidence labels, audit entries, deletion controls, and retention limits. |
+| **AI-assisted cases** | Optional case workspace that attaches saved reports and asks an OpenAI-compatible provider for a structured analysis with report-level citations. Disabled and idle until you configure a key and press **Analyze**. |
 | **Two interfaces** | Full CLI plus a local web UI bound to `127.0.0.1` with CSP, no-store headers, and CSRF-style header checks on mutations. |
 
-Everything runs locally. There is no account, telemetry, cloud storage, or npm dependency.
+Everything runs locally except explicit public-source checks and, only when you start a case
+analysis, the AI provider request. There is no account, telemetry, cloud storage, or npm
+dependency.
 
 ---
 
@@ -257,6 +261,11 @@ Tabs:
    download a metadata-stripped copy. The original is never modified.
 4. **Reports** — list saved reports, open HTML, download JSON, delete one, or delete everything
    (including the audit log). The audit panel shows action history, not findings.
+5. **Cases** — create a local case with a title and notes, attach or remove saved reports, and
+   run a reviewed AI analysis. Only attached reports and case notes are sent, and the preview
+   must be saved explicitly.
+6. **AI settings** — configure an OpenAI-compatible base URL, model, limits, and API key. The
+   key is stored server-side and is never returned to the browser.
 
 Security headers and behaviour:
 
@@ -265,6 +274,8 @@ Security headers and behaviour:
 - API mutations require an `x-argus: 1` header and reject cross-origin requests.
 - Report HTML is served with `default-src 'none'`, `form-action 'none'`, and no framing.
 - Uploads are size-limited (`maxUploadMb`, default 30 MB).
+- JSON bodies have per-route size limits; AI provider requests have a configurable timeout and
+  a hard response/request cap.
 
 ### Local API (advanced)
 
@@ -272,8 +283,8 @@ The UI uses a small JSON API on the same origin:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/health` | Liveness and tool version. |
-| `GET` | `/api/config` | Settings, categories, resolved sources, HIBP status. |
+| `GET` | `/api/health` | Liveness, tool version, HIBP and AI key status (booleans only). |
+| `GET` | `/api/config` | Settings, categories, resolved sources, HIBP status, masked AI settings. |
 | `GET` | `/api/sources` | Resolved source registry. |
 | `PATCH` | `/api/sources/:id` | Enable/disable a source (persisted to config). |
 | `POST` | `/api/username` | Body `{ username, categories? }` → `{ jobId }`. |
@@ -285,6 +296,13 @@ The UI uses a small JSON API on the same origin:
 | `GET`/`DELETE` | `/api/reports/:id` | Read/delete one report. |
 | `GET` | `/api/reports/:id/html` and `/json` | Rendered report. |
 | `GET`/`DELETE` | `/api/audit` | Read or clear the audit log. |
+| `GET`/`PUT` | `/api/ai/settings` | Read masked settings or update settings/key. Never returns the key. |
+| `GET`/`POST` | `/api/cases` | List cases or create one with `{ title, notes? }`. |
+| `GET`/`PATCH`/`DELETE` | `/api/cases/:id` | Read, update title/notes, or delete a case. |
+| `POST`/`DELETE` | `/api/cases/:id/reports` | Attach `{ reportIds: [...] }` or remove `/api/cases/:id/reports/:reportId`. |
+| `POST` | `/api/cases/:id/analyze` | Explicit provider call; returns an unsaved preview with `previewId`. |
+| `POST` | `/api/cases/:id/analyses` | Save a reviewed preview with `{ previewId }`. |
+| `DELETE` | `/api/cases/:id/analyses/:analysisId` | Delete a saved analysis. |
 
 Mutating calls must include `x-argus: 1`. Username/email scans are asynchronous: poll
 `/api/jobs/:id` until `status` is `done` or `error`.
@@ -404,6 +422,116 @@ node argus.mjs strip ./photo.jpg --out ./shared/photo.jpg
 
 ---
 
+## AI-assisted case investigation
+
+The AI feature is optional. ARGUS works normally with no key, with a blank configuration, or
+while the provider is unreachable. No request is sent to an AI provider until you create a case,
+attach reports, and press **Analyze case**.
+
+### Configure a provider
+
+Open **AI settings** in the web UI and set:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Base URL | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint. The request goes to `<base URL>/chat/completions`. |
+| Model | `gpt-4o-mini` | Any chat-completions model the provider exposes. |
+| API key | — | Stored server-side only. Never returned by an API or rendered in the UI. |
+| Timeout | `60000` ms | Per analysis request, 1,000–120,000 ms. |
+| Max output tokens | `1800` | 256–8,192. |
+| Max input characters | `60000` | 2,000–200,000. Larger evidence sets are truncated and omitted report IDs are reported. |
+
+Do not add a provider “test connection” button: static validation only is intentional, so saving
+settings cannot trigger an AI network request.
+
+You can also provide the key without saving anything locally:
+
+```bash
+# Linux / macOS
+export ARGUS_AI_API_KEY="your-key"
+node argus.mjs serve
+
+# Windows PowerShell
+$env:ARGUS_AI_API_KEY = "your-key"
+node argus.mjs serve
+```
+
+### API key storage and precedence
+
+The key is resolved in this order:
+
+1. `ARGUS_AI_API_KEY`
+2. `OPENAI_API_KEY`
+3. `data/ai-secrets.json`, written with mode `0600` on POSIX (created/updated atomically).
+
+Environment variables always win. If one is set, the UI shows that the key comes from the
+environment and clearing the local file will not remove it. **Windows caveat:** POSIX file modes
+are not meaningful on NTFS; the file stays inside the git-ignored `data/` directory, and you
+should rely on OS account permissions and full-disk encryption.
+
+The key is never written to `argus.config.json`, reports, cases, or the audit log, and it is
+never sent to browser JavaScript. Only `keyConfigured`, a masked placeholder, and a source label
+are exposed.
+
+### Case workflow and data flow
+
+1. Create a case with a title and notes.
+2. Attach saved report IDs. Reports can be removed again without deleting the underlying report.
+3. Press **Analyze case** and confirm the provider/model and host shown in the dialog.
+4. ARGUS builds a minimised evidence payload containing only the selected reports and the case
+   notes. It sends one `POST` to the configured chat-completions endpoint.
+5. The result is validated and shown as a preview. Nothing is saved automatically.
+6. Review the structured sections, then **Save analysis to case**, **Discard preview**, or
+   **Run again**. Provider failures keep the case, notes, and report attachments intact and
+   show a retry button.
+
+Case data is stored under `data/cases/` as `argus.case/v1` JSON. Each case keeps at most 50
+reports and 20 reviewed analyses. Analyses are stored as `argus.analysis/v1` records. Prompts
+and full raw provider responses are not stored.
+
+### Structured output and citations
+
+The provider must return JSON with these sections:
+
+- `summary` — a short neutral overview.
+- `observedEvidence` — facts directly present in a supplied report.
+- `interpretations` — explicitly labelled inferences with low/medium/high confidence.
+- `uncertainty` — missing data, conflicts, and limitations.
+- `suggestedNextSteps` — passive, public-source steps with priority and human review.
+- `unsupportedClaims` — claims the model considered but could not support.
+
+Every observed evidence item, interpretation, and next step must include at least one citation
+with an exact attached `reportId` and a specific `field` or `finding`. ARGUS validates every
+citation against the attached report IDs. Items with unknown reports, missing fields, or no
+citation stay visible but are flagged as unsupported and listed in the warnings. A matching
+username or metadata value is treated as a lead, not proof of identity.
+
+AI text is untrusted input: every string is escaped before rendering. Citation links only open
+local report HTML. ARGUS never contacts people, accounts, websites, or third-party services from
+an AI suggestion, and the prompt explicitly forbids active scanning, login attempts, or access
+to private data.
+
+### Provider errors
+
+Errors are returned with a stable `code`, a human-readable message, and `retryable` where useful:
+
+| Condition | HTTP status | `code` |
+| --- | --- | --- |
+| Missing key | 400 | `missing_api_key` |
+| Invalid settings | 400 | `invalid_ai_settings` |
+| No attached reports | 400 | `no_reports` |
+| Input cannot fit | 413 | `empty_evidence` / `request_too_large` |
+| Provider rate limit | 429 | `provider_rate_limited` (may include `retryAfter`) |
+| Timeout | 504 | `provider_timeout` |
+| Auth, endpoint, or provider failure | 502 | `provider_auth`, `provider_endpoint`, `provider_error` |
+| Malformed or unstructured output | 502 | `provider_invalid_response`, `provider_unstructured` |
+| Expired save preview | 404 | `preview_expired` |
+
+Provider error text is truncated and redacted before it reaches the UI or logs. Full provider
+responses and prompts are not logged.
+
+---
+
 ## Reports, audit log, and retention
 
 Reports are written to `reports/` by default; the audit log is `data/audit.jsonl`.
@@ -443,7 +571,14 @@ keys fall back to defaults.
     "hibpApiKeyEnv": "HIBP_API_KEY",
     "logTargetsInAudit": true,
     "reportDir": "reports",
-    "dataDir": "data"
+    "dataDir": "data",
+    "ai": {
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "gpt-4o-mini",
+      "timeoutMs": 60000,
+      "maxOutputTokens": 1800,
+      "maxInputChars": 60000
+    }
   },
   "sources": {
     "reddit": { "enabled": false },
@@ -460,6 +595,8 @@ Environment variables:
 | Variable | Purpose |
 | --- | --- |
 | `HIBP_API_KEY` | Enables optional breach-metadata checks. |
+| `ARGUS_AI_API_KEY` | AI provider key; takes precedence over `OPENAI_API_KEY` and the local secrets file. |
+| `OPENAI_API_KEY` | Fallback AI provider key when `ARGUS_AI_API_KEY` is unset. |
 | `ARGUS_CONFIG` | Path to an alternative config file. |
 | `ARGUS_REPORTS` | Override the reports directory. |
 | `ARGUS_DATA` | Override the data/audit directory. |
@@ -483,6 +620,14 @@ strings such as a bare `404` cause false negatives.
 - **No breach secrets.** HIBP results are restricted to public breach metadata.
 - **Opt-in file reports.** File analysis happens in memory; saving is a deliberate choice.
 - **Data minimisation.** Retention limits, explicit deletion, and an audit trail.
+- **Server-side AI key.** The key is resolved from env or the git-ignored `data/ai-secrets.json`
+  and is never returned to the browser, written to reports/cases, or added to the audit log.
+- **Explicit AI requests only.** No provider call happens until **Analyze case** is pressed;
+  only attached report evidence and case notes are sent.
+- **Untrusted AI output.** All model text is escaped before rendering, citations are validated
+  against attached report IDs, and unsupported claims are flagged instead of shown as facts.
+- **No automated outreach.** AI suggestions never trigger messages, logins, scans, or third-party
+  actions.
 - **Output hardening.** HTML escaping, safe URL schemes, CSP, `no-store`, `nosniff`, and
   cross-origin mutation rejection.
 - **Honest failures.** Timeouts, 5xx responses, robots denials, and ambiguous pages are
@@ -490,8 +635,12 @@ strings such as a bare `404` cause false negatives.
 
 Operational advice:
 
-- Run ARGUS from a dedicated directory and keep `reports/` and `data/` out of version control
-  (`.gitignore` already covers them).
+- Run ARGUS from a dedicated directory and keep `reports/`, `data/`, and `argus.config.json` out
+  of version control (`.gitignore` already covers them).
+- Treat `data/ai-secrets.json` as a credential. Prefer `ARGUS_AI_API_KEY` when your environment
+  supports it, and remove the local file when it is no longer needed.
+- AI providers receive the attached evidence. Check your provider's retention and training
+  policies, and avoid attaching reports you are not permitted to disclose.
 - Use full-disk encryption where possible; reports can contain personal data.
 - Delete reports and the audit log when an investigation ends.
 - Do not expose the web server through a reverse proxy or bind it to `0.0.0.0`.
@@ -518,8 +667,14 @@ Coverage includes:
 - Email syntax, MD5 Gravatar hash, disposable/role lists, DNS failure handling, and domain
   normalisation.
 - Report HTML escaping, save/list/read/delete, retention and overflow purging.
+- AI settings validation, key masking/redaction, env precedence, provider error mapping, evidence
+  minimisation, citation validation, and no-request behaviour without a key.
+- Case creation, report attachment/removal, analysis persistence, and deletion without losing
+  reports.
 - Server headers, CSRF-style header checks, file analysis, report download/deletion, and path
   traversal rejection.
+- End-to-end case analysis against a local mock OpenAI-compatible provider, including preview
+  review, save, rate-limit failure recovery, and local secret storage.
 - CLI argument parsing and option errors.
 
 ---
@@ -540,6 +695,13 @@ Coverage includes:
 - Stripping handles JPEG and PNG only. It cannot guarantee removal of every watermark,
   steganographic payload, or vendor-specific block.
 - Gravatar data is self-published and can be outdated or misleading.
+- AI output can be wrong, overconfident, or subtly unsupported even when it returns valid JSON.
+  Citations are checked for report/field presence, not semantic correctness; a human must verify
+  every claim against the report. Provider prompts and model behaviour vary by vendor.
+- The AI evidence payload is deliberately minimised, so a provider can miss details that were
+  truncated or omitted. Omitted report IDs are reported in the preview.
+- Cases and analyses are local files with no encryption at rest beyond OS/disk controls. They are
+  not a chain-of-custody system, and deleting a case does not delete its saved reports.
 - The tool is not a substitute for legal process, verified identity checks, or forensic
   chain-of-custody procedures.
 

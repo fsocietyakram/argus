@@ -1,7 +1,17 @@
-# Local reports and audit data (may contain sensitive findings)
+# Local reports, cases, audit data, and AI secrets (may contain sensitive findings)
 reports/
 data/
+data/cases/
+data/ai-secrets.json
 argus.config.json
+ai-secrets.json
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Node
 node_modules/

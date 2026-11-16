@@ -10,6 +10,10 @@ const state = {
   fileResult: null,
   emailTimer: null,
   reports: [],
+  cases: [],
+  activeCase: null,
+  casePreview: null,
+  aiSettings: null,
 };
 
 /* ------------------------------------------------------------------ */
@@ -105,14 +109,21 @@ async function api(path, options = {}) {
 
   if (!res.ok) {
     let message = `Request failed (HTTP ${res.status}).`;
+    let data = null;
     if (type.includes('application/json')) {
-      const data = await res.json().catch(() => null);
+      data = await res.json().catch(() => null);
       if (data?.error) message = data.error;
     } else {
       const text = await res.text().catch(() => '');
       if (text) message = text.slice(0, 300);
     }
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = res.status;
+    error.code = data?.code || null;
+    error.retryable = Boolean(data?.retryable);
+    error.retryAfter = data?.retryAfter ?? null;
+    error.missing = Array.isArray(data?.missing) ? data.missing : null;
+    throw error;
   }
 
   if (type.includes('application/json')) return res.json();
@@ -143,6 +154,11 @@ function activateTab(name) {
   $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${name}`));
   if (history.replaceState) history.replaceState(null, '', `#${name}`);
   if (name === 'reports') refreshReports();
+  if (name === 'cases') {
+    refreshCases();
+    loadCaseReportOptions();
+  }
+  if (name === 'ai-settings') loadAiSettings();
 }
 
 function initTabs() {
@@ -150,7 +166,7 @@ function initTabs() {
     tab.addEventListener('click', () => activateTab(tab.dataset.tab));
   });
   const hash = (window.location.hash || '').replace('#', '');
-  if (['username', 'email', 'file', 'reports'].includes(hash)) activateTab(hash);
+  if (['username', 'email', 'file', 'reports', 'cases', 'ai-settings'].includes(hash)) activateTab(hash);
 }
 
 /* ------------------------------------------------------------------ */
@@ -160,6 +176,7 @@ function initTabs() {
 async function loadConfig() {
   const config = await api('/api/config');
   state.config = config;
+  if (config.ai) applyAiSettings(config.ai);
 
   const hibp = $('#hibp-badge');
   if (hibp) {
@@ -1183,6 +1200,626 @@ function initReports() {
 }
 
 /* ------------------------------------------------------------------ */
+/* AI settings                                                         */
+/* ------------------------------------------------------------------ */
+
+function aiSourceLabel(settings) {
+  if (!settings?.keyConfigured) return 'No key configured';
+  if (settings.envOverride) return `Environment variable (${settings.keySource})`;
+  return 'Local secrets file (data/ai-secrets.json)';
+}
+
+function applyAiSettings(settings) {
+  state.aiSettings = settings || null;
+  if (!settings) return;
+
+  $('#ai-base-url').value = settings.baseUrl || '';
+  $('#ai-model').value = settings.model || '';
+  $('#ai-timeout').value = settings.timeoutMs ?? '';
+  $('#ai-max-tokens').value = settings.maxOutputTokens ?? '';
+  $('#ai-max-input').value = settings.maxInputChars ?? '';
+  $('#ai-api-key').value = '';
+
+  const status = $('#ai-key-status');
+  if (status) {
+    status.textContent = settings.keyConfigured ? `Key saved ${settings.keyMasked || ''}`.trim() : 'No API key saved';
+    status.classList.toggle('ok', Boolean(settings.keyConfigured));
+  }
+  const source = $('#ai-key-source');
+  if (source) source.textContent = `Source: ${aiSourceLabel(settings)}`;
+}
+
+async function loadAiSettings() {
+  try {
+    const data = await api('/api/ai/settings');
+    applyAiSettings(data.settings);
+    return data.settings;
+  } catch (err) {
+    toast(`Could not load AI settings: ${err.message}`, 'error');
+    return null;
+  }
+}
+
+async function saveAiSettings(event) {
+  event?.preventDefault();
+  const button = $('#ai-save');
+  const apiKey = $('#ai-api-key').value;
+  const payload = {
+    baseUrl: $('#ai-base-url').value.trim(),
+    model: $('#ai-model').value.trim(),
+    timeoutMs: Number($('#ai-timeout').value),
+    maxOutputTokens: Number($('#ai-max-tokens').value),
+    maxInputChars: Number($('#ai-max-input').value),
+  };
+  if (apiKey.trim()) payload.apiKey = apiKey.trim();
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Saving…';
+  }
+  try {
+    const data = await api('/api/ai/settings', { method: 'PUT', json: payload });
+    applyAiSettings(data.settings);
+    toast(data.keyUpdated ? 'AI settings and key saved on the server.' : 'AI settings saved.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Save settings';
+    }
+  }
+}
+
+async function clearAiKey() {
+  const settings = state.aiSettings;
+  const extra = settings?.envOverride
+    ? `\n\nNote: ${settings.keySource} is currently set and takes precedence. Clearing the local file will not remove the environment variable.`
+    : '';
+  if (!window.confirm(`Clear the locally saved AI API key?${extra}`)) return;
+  try {
+    const data = await api('/api/ai/settings', { method: 'PUT', json: { clearKey: true } });
+    applyAiSettings(data.settings);
+    toast('Locally saved API key cleared.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function initAiSettings() {
+  $('#ai-form')?.addEventListener('submit', saveAiSettings);
+  $('#ai-clear-key')?.addEventListener('click', clearAiKey);
+  $('#ai-reload')?.addEventListener('click', loadAiSettings);
+}
+
+/* ------------------------------------------------------------------ */
+/* Cases                                                               */
+/* ------------------------------------------------------------------ */
+
+async function loadCaseReportOptions() {
+  const select = $('#case-report-select');
+  if (!select) return;
+  try {
+    const data = await api('/api/reports');
+    state.reports = data.reports || [];
+  } catch (err) {
+    console.warn('[argus] could not load report options', err.message);
+  }
+
+  const attached = new Set(state.activeCase?.reportIds || []);
+  const previous = select.value;
+  select.innerHTML = '<option value="">Choose a saved report…</option>';
+  for (const report of state.reports) {
+    if (attached.has(report.id)) continue;
+    const option = document.createElement('option');
+    option.value = report.id;
+    option.textContent = `${COMMAND_LABELS[report.command] || report.command || 'Report'} · ${report.target || report.id} · ${fmtDate(report.createdAt)}`;
+    select.append(option);
+  }
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+}
+
+function renderCaseList() {
+  const host = $('#case-list');
+  if (!host) return;
+  if (!state.cases.length) {
+    host.innerHTML = '<p class="muted">No cases yet. Create one, then attach saved reports.</p>';
+    return;
+  }
+  host.innerHTML = `<table class="data-table">
+    <thead><tr><th>Updated</th><th>Title</th><th>Reports</th><th>Analyses</th><th>Actions</th></tr></thead>
+    <tbody>${state.cases
+      .map(
+        (item) => `<tr>
+          <td>${esc(fmtDate(item.updatedAt))}</td>
+          <td>${esc(item.title)}</td>
+          <td>${item.reportCount ?? 0}</td>
+          <td>${item.analysisCount ?? 0}</td>
+          <td><button type="button" class="secondary" data-open-case="${esc(item.id)}">Open</button></td>
+        </tr>`,
+      )
+      .join('')}</tbody></table>`;
+
+  $$('button[data-open-case]', host).forEach((button) => {
+    button.addEventListener('click', () => openCase(button.dataset.openCase));
+  });
+}
+
+async function refreshCases() {
+  const host = $('#case-list');
+  if (host && !state.cases.length) host.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const data = await api('/api/cases');
+    state.cases = data.cases || [];
+    renderCaseList();
+  } catch (err) {
+    if (host) host.innerHTML = `<p class="muted">${esc(err.message)}</p>`;
+  }
+}
+
+function caseCitation(citation) {
+  const reportId = String(citation?.reportId || 'unknown report');
+  const known = citation?.reportKnown && citation?.valid !== false;
+  const refs = [citation?.field, citation?.finding].filter(Boolean).map((value) => esc(value)).join(' · ');
+  const label = `<span class="mono">${esc(reportId)}</span>${refs ? ` · ${refs}` : ''}`;
+  if (citation?.reportKnown) {
+    return `<a class="chip link citation${known ? '' : ' bad'}" href="/api/reports/${encodeURIComponent(reportId)}/html" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  }
+  return `<span class="chip citation bad">${label} <span class="muted">(unknown report)</span></span>`;
+}
+
+function analysisSourceNote() {
+  const settings = state.aiSettings;
+  const host = settings?.baseUrl ? (() => {
+    try {
+      return new URL(settings.baseUrl).host;
+    } catch {
+      return 'the configured provider';
+    }
+  })() : 'the configured provider';
+  return `Sends the attached report evidence and case notes to ${host}.`;
+}
+
+function renderAnalysisItems(items, emptyText) {
+  if (!items?.length) return `<p class="muted small">${esc(emptyText)}</p>`;
+  return `<ul class="analysis-list">${items
+    .map(
+      (item) => `<li class="${item.supported ? '' : 'unsupported'}">
+        <div class="analysis-text">${esc(item.text)}</div>
+        ${item.confidence ? `<span class="chip">confidence: ${esc(item.confidence)}</span>` : ''}
+        ${item.priority ? `<span class="chip">priority: ${esc(item.priority)}</span>` : ''}
+        ${item.requiresHumanReview ? '<span class="chip warn">human review required</span>' : ''}
+        ${item.supported ? '' : '<span class="chip bad">unsupported claim</span>'}
+        <div class="citations">${(item.citations || []).map((citation) => caseCitation(citation)).join('') || '<span class="muted small">No citation</span>'}</div>
+      </li>`,
+    )
+    .join('')}</ul>`;
+}
+
+function renderAnalysis(analysis, { preview = false, evidenceIds: evidenceInput = [] } = {}) {
+  if (!analysis) return '<p class="muted">No analysis.</p>';
+  const evidenceIds = (evidenceInput || []).map((id) => esc(id));
+  const citations = analysis.citations || {};
+  const warnings = analysis.warnings || [];
+  const unsupported = analysis.unsupportedClaims || [];
+
+  return `<div class="analysis ${preview ? 'preview' : ''}">
+    <div class="analysis-head">
+      <span class="badge ${preview ? 'possible' : 'unverified'}">${preview ? 'AI analysis — review before saving' : 'Saved AI analysis'}</span>
+      ${analysis.model ? `<span class="chip">${esc(analysis.model)}</span>` : ''}
+      <span class="chip">citations ${Number(citations.valid || 0)}/${Number(citations.total || 0)} valid</span>
+    </div>
+
+    <p class="analysis-summary">${esc(analysis.summary || '')}</p>
+
+    ${warnings.length ? `<div class="callout warn">${warnings.map((warning) => `<div>${esc(warning)}</div>`).join('')}</div>` : ''}
+
+    <section class="analysis-section">
+      <h4>Observed evidence</h4>
+      <p class="muted small">Only facts directly present in a cited report. AI interpretation is kept separate.</p>
+      ${renderAnalysisItems(analysis.observedEvidence, 'The provider reported no directly observed evidence.')}
+    </section>
+
+    <section class="analysis-section">
+      <h4>Interpretations</h4>
+      ${renderAnalysisItems(analysis.interpretations, 'No interpretations were provided.')}
+    </section>
+
+    <section class="analysis-section">
+      <h4>Uncertainty</h4>
+      ${analysis.uncertainty?.length
+        ? `<ul class="analysis-list">${analysis.uncertainty.map((item) => `<li><div class="analysis-text">${esc(item)}</div></li>`).join('')}</ul>`
+        : '<p class="muted small">No uncertainty was stated. Treat that as a warning sign, not confidence.</p>'}
+    </section>
+
+    <section class="analysis-section">
+      <h4>Suggested next steps</h4>
+      <p class="muted small">Suggestions only. ARGUS will not contact anyone, log in, or scan third-party systems.</p>
+      ${renderAnalysisItems(analysis.suggestedNextSteps, 'No next steps were provided.')}
+    </section>
+
+    ${unsupported.length
+      ? `<section class="analysis-section unsupported-block">
+          <h4>Unsupported or dropped claims</h4>
+          <p class="muted small">These claims were not backed by a supplied report and must not be treated as facts.</p>
+          <ul class="analysis-list">${unsupported.map((item) => `<li class="unsupported"><div class="analysis-text">${esc(item)}</div></li>`).join('')}</ul>
+        </section>`
+      : ''}
+
+    <p class="muted small">${esc(analysis.disclaimer || 'AI output is untrusted assistance, not evidence.')}</p>
+    ${evidenceIds.length ? `<p class="muted small">Evidence sent: ${evidenceIds.map((id) => `<span class="mono">${id}</span>`).join(', ')}</p>` : ''}
+  </div>`;
+}
+
+function renderCasePreview() {
+  const host = $('#case-preview');
+  if (!host) return;
+  const preview = state.casePreview;
+  if (!preview || preview.caseId !== state.activeCase?.id) {
+    host.innerHTML = '';
+    return;
+  }
+  host.innerHTML = `${renderAnalysis(preview.analysis, { preview: true, evidenceIds: preview.evidence?.reportIds })}
+    <div class="actions-row analysis-actions">
+      <button type="button" class="primary" id="analysis-save">Save analysis to case</button>
+      <button type="button" class="secondary" id="analysis-discard">Discard preview</button>
+      <button type="button" class="secondary" id="analysis-retry">Run again</button>
+      <span class="muted small">Preview expires ${esc(fmtDate(preview.expiresAt))}. Nothing is saved until you choose Save.</span>
+    </div>`;
+
+  $('#analysis-save')?.addEventListener('click', saveCaseAnalysis);
+  $('#analysis-discard')?.addEventListener('click', () => {
+    state.casePreview = null;
+    renderCasePreview();
+  });
+  $('#analysis-retry')?.addEventListener('click', analyzeCase);
+}
+
+function renderCaseAnalyses() {
+  const host = $('#case-analyses');
+  if (!host) return;
+  const analyses = state.activeCase?.analyses || [];
+  if (!analyses.length) {
+    host.innerHTML = '<p class="muted small">No saved analyses yet.</p>';
+    return;
+  }
+  host.innerHTML = `<h4 class="saved-analyses-head">Saved analyses</h4>${analyses
+    .slice()
+    .reverse()
+    .map(
+      (entry) => `<details class="saved-analysis" data-analysis="${esc(entry.id)}">
+        <summary>
+          <span>${esc(fmtDate(entry.createdAt))}</span>
+          <span class="muted">${esc(entry.model || 'model unknown')}</span>
+          <span class="muted">citations ${Number(entry.analysis?.citations?.valid || 0)}/${Number(entry.analysis?.citations?.total || 0)}</span>
+        </summary>
+        ${renderAnalysis(entry.analysis, { evidenceIds: entry.evidence?.reportIds })}
+        <div class="actions-row">
+          <button type="button" class="danger" data-delete-analysis="${esc(entry.id)}">Delete this analysis</button>
+        </div>
+      </details>`,
+    )
+    .join('')}`;
+
+  $$('button[data-delete-analysis]', host).forEach((button) => {
+    button.addEventListener('click', () => deleteCaseAnalysis(button.dataset.deleteAnalysis));
+  });
+}
+
+function renderCase() {
+  const record = state.activeCase;
+  const editor = $('#case-editor');
+  if (!editor) return;
+  if (!record) {
+    editor.classList.add('hidden');
+    return;
+  }
+  editor.classList.remove('hidden');
+  $('#case-editor-title').textContent = record.title || 'Case';
+  $('#case-title').value = record.title || '';
+  $('#case-notes').value = record.notes || '';
+  $('#case-meta').textContent = `${record.reportIds?.length || 0} report(s) · ${record.analyses?.length || 0} saved analysis(es) · updated ${fmtDate(record.updatedAt)}`;
+  $('#case-report-count').textContent = `(${record.reportIds?.length || 0})`;
+
+  const byId = new Map((record.reports || []).map((report) => [report.id, report]));
+  const reportsHost = $('#case-reports');
+  if (!record.reportIds?.length) {
+    reportsHost.innerHTML = '<p class="muted small">No reports attached. Attach at least one before analyzing.</p>';
+  } else {
+    reportsHost.innerHTML = `<table class="data-table compact">
+      <thead><tr><th>Report</th><th>Tool</th><th>Target</th><th>Risk</th><th>Actions</th></tr></thead>
+      <tbody>${record.reportIds
+        .map((id) => {
+          const report = byId.get(id);
+          if (!report || report.missing) {
+            return `<tr><td class="mono">${esc(id)}</td><td colspan="3"><span class="chip bad">missing report file</span></td>
+              <td><div class="report-row-actions">
+                <button type="button" class="danger" data-remove-report="${esc(id)}">Remove</button>
+              </div></td></tr>`;
+          }
+          return `<tr>
+            <td class="mono">${esc(id)}</td>
+            <td>${esc(COMMAND_LABELS[report.command] || report.command || '')}</td>
+            <td>${esc(report.target || '')}</td>
+            <td>${report.riskScore != null ? `${report.riskScore}/100 · ${esc(report.riskLevel || '')}` : '—'}</td>
+            <td><div class="report-row-actions">
+              <button type="button" data-open-report="${esc(id)}">Open</button>
+              <button type="button" class="danger" data-remove-report="${esc(id)}">Remove</button>
+            </div></td>
+          </tr>`;
+        })
+        .join('')}</tbody></table>`;
+  }
+
+  $$('button[data-remove-report]', reportsHost).forEach((button) => {
+    button.addEventListener('click', () => removeCaseReport(button.dataset.removeReport));
+  });
+  $$('button[data-open-report]', reportsHost).forEach((button) => {
+    button.addEventListener('click', () => {
+      window.open(`/api/reports/${encodeURIComponent(button.dataset.openReport)}/html`, '_blank', 'noopener');
+    });
+  });
+
+  renderCasePreview();
+  renderCaseAnalyses();
+  loadCaseReportOptions();
+}
+
+async function openCase(id) {
+  const host = $('#case-list');
+  if (host) host.innerHTML = '<p class="muted">Loading case…</p>';
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(id)}`);
+    state.activeCase = data.case;
+    if (state.casePreview?.caseId !== id) state.casePreview = null;
+    renderCase();
+    if (host) renderCaseList();
+    $('#case-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    toast(err.message, 'error');
+    refreshCases();
+  }
+}
+
+async function createCase(event) {
+  event?.preventDefault();
+  const title = $('#case-create-title').value.trim();
+  const notes = $('#case-create-notes').value;
+  if (!title) {
+    toast('Case title is required.', 'error');
+    return;
+  }
+  const button = $('#case-create-submit');
+  if (button) button.disabled = true;
+  try {
+    const data = await api('/api/cases', { method: 'POST', json: { title, notes } });
+    state.activeCase = data.case;
+    state.casePreview = null;
+    $('#case-create-title').value = '';
+    $('#case-create-notes').value = '';
+    $('#case-create-panel').classList.add('hidden');
+    renderCase();
+    await refreshCases();
+    toast('Case created.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function saveCaseDetails(event) {
+  event?.preventDefault();
+  if (!state.activeCase) return;
+  const button = $('#case-save');
+  if (button) button.disabled = true;
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(state.activeCase.id)}`, {
+      method: 'PATCH',
+      json: { title: $('#case-title').value.trim(), notes: $('#case-notes').value },
+    });
+    state.activeCase = data.case;
+    renderCase();
+    await refreshCases();
+    toast('Case saved.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function deleteCase() {
+  const record = state.activeCase;
+  if (!record) return;
+  if (!window.confirm('Delete this case, its notes, and its saved analyses? Saved reports are not deleted.')) return;
+  try {
+    await api(`/api/cases/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+    state.activeCase = null;
+    state.casePreview = null;
+    renderCase();
+    await refreshCases();
+    toast('Case deleted.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function attachCaseReport() {
+  const record = state.activeCase;
+  const select = $('#case-report-select');
+  if (!record || !select?.value) {
+    toast('Choose a saved report to attach.', 'error');
+    return;
+  }
+  const button = $('#case-attach');
+  if (button) button.disabled = true;
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(record.id)}/reports`, {
+      method: 'POST',
+      json: { reportIds: [select.value] },
+    });
+    state.activeCase = data.case;
+    renderCase();
+    await refreshCases();
+    toast('Report attached.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function removeCaseReport(reportId) {
+  const record = state.activeCase;
+  if (!record) return;
+  if (!window.confirm('Remove this report from the case? The saved report itself is not deleted.')) return;
+  try {
+    const data = await api(
+      `/api/cases/${encodeURIComponent(record.id)}/reports/${encodeURIComponent(reportId)}`,
+      { method: 'DELETE' },
+    );
+    state.activeCase = data.case;
+    renderCase();
+    await refreshCases();
+    toast('Report removed from case.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function renderAnalysisError(err) {
+  const host = $('#case-preview');
+  if (host) {
+    host.innerHTML = `<div class="callout error">
+      <strong>Analysis failed.</strong>
+      <p>${esc(err.message)}</p>
+      <p class="muted small">Your case and attached reports are unchanged.${err.retryable ? ' This error may be temporary.' : ''}</p>
+      <button type="button" class="secondary" id="analysis-error-retry">Retry analysis</button>
+    </div>`;
+    $('#analysis-error-retry')?.addEventListener('click', analyzeCase);
+  }
+  const status = $('#case-analyze-status');
+  if (status) status.textContent = 'Analysis failed. Nothing was saved.';
+}
+
+async function analyzeCase() {
+  const record = state.activeCase;
+  if (!record) return;
+  if (!record.reportIds?.length) {
+    toast('Attach at least one saved report before analyzing.', 'error');
+    return;
+  }
+
+  let settings = state.aiSettings;
+  if (!settings) {
+    try {
+      settings = (await api('/api/ai/settings')).settings;
+      state.aiSettings = settings;
+    } catch (err) {
+      toast(`Could not load AI settings: ${err.message}`, 'error');
+      return;
+    }
+  }
+  if (!settings?.keyConfigured) {
+    toast('No AI API key is configured. Save one in AI settings first.', 'error');
+    activateTab('ai-settings');
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Analyze this case with ${settings.model}?\n\n${analysisSourceNote().replace(/<[^>]+>/g, '')}\nOnly the attached reports and case notes are sent. This contact is made only because you pressed Analyze. No people or third-party services are contacted from the result.`,
+  );
+  if (!confirmed) return;
+
+  const button = $('#case-analyze');
+  const status = $('#case-analyze-status');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Analyzing…';
+  }
+  if (status) status.textContent = `Waiting for ${settings.model || 'the provider'}…`;
+  const previousPreview = state.casePreview;
+  if (previousPreview) state.casePreview = null;
+  renderCasePreview();
+
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(record.id)}/analyze`, { method: 'POST' });
+    state.casePreview = { ...data, caseId: record.id };
+    renderCasePreview();
+    if (status) {
+      status.textContent = `Received ${data.analysis?.observedEvidence?.length ?? 0} observed item(s) from ${data.model || 'the provider'}. Review before saving.`;
+    }
+    toast('Analysis ready for review. Nothing has been saved yet.', 'success');
+  } catch (err) {
+    if (previousPreview) state.casePreview = previousPreview;
+    renderAnalysisError(err);
+    toast(err.message, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Analyze case';
+    }
+  }
+}
+
+async function saveCaseAnalysis() {
+  const record = state.activeCase;
+  const preview = state.casePreview;
+  if (!record || !preview) return;
+  const button = $('#analysis-save');
+  if (button) button.disabled = true;
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(record.id)}/analyses`, {
+      method: 'POST',
+      json: { previewId: preview.previewId },
+    });
+    state.activeCase = data.case;
+    state.casePreview = null;
+    renderCase();
+    await refreshCases();
+    toast('Analysis saved with the case.', 'success');
+  } catch (err) {
+    if (button) button.disabled = false;
+    toast(err.message, 'error');
+  }
+}
+
+async function deleteCaseAnalysis(analysisId) {
+  const record = state.activeCase;
+  if (!record) return;
+  if (!window.confirm('Delete this saved analysis? This cannot be undone.')) return;
+  try {
+    const data = await api(
+      `/api/cases/${encodeURIComponent(record.id)}/analyses/${encodeURIComponent(analysisId)}`,
+      { method: 'DELETE' },
+    );
+    state.activeCase = data.case;
+    renderCase();
+    await refreshCases();
+    toast('Analysis deleted.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function initCases() {
+  $('#cases-refresh')?.addEventListener('click', refreshCases);
+  $('#case-new')?.addEventListener('click', () => {
+    $('#case-create-panel').classList.remove('hidden');
+    $('#case-create-title').focus();
+  });
+  $('#case-create-cancel')?.addEventListener('click', () => {
+    $('#case-create-panel').classList.add('hidden');
+  });
+  $('#case-create-form')?.addEventListener('submit', createCase);
+  $('#case-form')?.addEventListener('submit', saveCaseDetails);
+  $('#case-delete')?.addEventListener('click', deleteCase);
+  $('#case-attach')?.addEventListener('click', attachCaseReport);
+  $('#case-analyze')?.addEventListener('click', analyzeCase);
+}
+
+/* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1192,6 +1829,8 @@ async function boot() {
   initEmail();
   initFile();
   initReports();
+  initCases();
+  initAiSettings();
 
   try {
     await loadConfig();
